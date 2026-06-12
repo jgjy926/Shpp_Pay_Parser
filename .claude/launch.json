@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["wrangler", "pages", "dev", "web", "--port", "8788", "--compatibility-date", "2026-06-01"],
+      "port": 8788
+    }
+  ]
+}

@@ -8,10 +8,15 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main id="app">
-    <h1>ShopeePay BNPL Tracker</h1>
-    <p>Phase 0 — scaffold deployed. Dashboard arrives in Phase 4.</p>
-  </main>
+  <header><h1>ShopeePay BNPL Tracker</h1></header>
+  <main id="view"></main>
+  <div id="toast"></div>
+  <nav class="tabbar">
+    <button class="tab" data-tab="dashboard">📊<span>Dashboard</span></button>
+    <button class="tab" data-tab="transactions">🧾<span>Transactions</span></button>
+    <button class="tab" data-tab="add">➕<span>Add</span></button>
+    <button class="tab" data-tab="settings">⚙️<span>Settings</span></button>
+  </nav>
   <script type="module" src="app.js"></script>
 </body>
 </html>
