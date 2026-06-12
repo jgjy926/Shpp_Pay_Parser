@@ -1,0 +1,30 @@
+/* Mobile-first base styles — fleshed out in Phase 4 */
+:root {
+  --bg: #fff;
+  --fg: #1a1a1a;
+  --accent: #ee4d2d; /* Shopee orange */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --fg: #eee;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+#app {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+h1 { color: var(--accent); font-size: 1.4rem; }
