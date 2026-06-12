@@ -23,7 +23,7 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
 ## Build status
 - [x] Phase 0 — scaffold (hello-world Worker + blank page)
 - [x] Phase 1 — Koofr WebDAV client (note: Koofr ignores If-Match on PUT; client pre-checks with HEAD)
-- [ ] Phase 2 — API endpoints + auth + CORS
+- [x] Phase 2 — API endpoints + auth + CORS
 - [ ] Phase 3 — client-side parser + fixture tests
 - [ ] Phase 4 — frontend views
 - [ ] Phase 5 — polish
