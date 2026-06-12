@@ -36,12 +36,15 @@ function parseAmount(line) {
 
 /**
  * Parse a ShopeePay paste into transactions.
- * Returns { transactions, errors } — errors carry 1-based line numbers.
+ * Returns { transactions, errors, ignored } — all carry 1-based line numbers.
+ * `ignored` is app chrome around the records (headers like "All Transactions",
+ * footer buttons) — expected in every real paste, so not an error.
  */
 export function parseShopeePay(text) {
   const lines = text.split(/\r?\n/);
   const transactions = [];
   const errors = [];
+  const ignored = [];
 
   let current = null; // { type, typeLine, description: [] }
 
@@ -63,7 +66,7 @@ export function parseShopeePay(text) {
     }
 
     if (!current) {
-      fail(lineNo, `unexpected line outside a record: "${line}"`);
+      ignored.push({ line: lineNo, text: line });
       continue;
     }
 
@@ -101,5 +104,5 @@ export function parseShopeePay(text) {
     });
   }
 
-  return { transactions, errors };
+  return { transactions, errors, ignored };
 }

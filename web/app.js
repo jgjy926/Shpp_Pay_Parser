@@ -174,7 +174,7 @@ function renderAdd() {
     </form>`;
 
   $("#btn-parse").onclick = () => {
-    const { transactions, errors } = parseShopeePay($("#paste").value);
+    const { transactions, errors, ignored } = parseShopeePay($("#paste").value);
     const box = $("#preview");
     if (!transactions.length && !errors.length) {
       box.innerHTML = `<div class="empty">Nothing to parse.</div>`;
@@ -182,6 +182,7 @@ function renderAdd() {
     }
     box.innerHTML = `
       ${errors.length ? `<div class="warn">${errors.length} problem(s):<br>${errors.map((e) => `line ${e.line}: ${esc(e.message)}`).join("<br>")}</div>` : ""}
+      ${ignored.length ? `<div class="empty" style="padding:0.3rem 0">${ignored.length} non-transaction line(s) skipped</div>` : ""}
       <table class="preview-table">
         <tr><th>Date</th><th>Type</th><th>Description</th><th class="r">Amount</th></tr>
         ${transactions

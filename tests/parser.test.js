@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseShopeePay } from "../web/parser.js";
@@ -44,13 +44,16 @@ test("multi-line descriptions are joined", () => {
   assert.equal(transactions[0].description, "Apple iPhone 17 256GB Blue");
 });
 
-test("garbage between records is reported, parsing continues", () => {
-  const { transactions, errors } = parseShopeePay(
-    "random header text\nBNPL\nShop A\n03 May 2026\n-RM5.00\n",
+test("app chrome around records is ignored, not an error", () => {
+  const { transactions, errors, ignored } = parseShopeePay(
+    "All Transactions\nBNPL\nShop A\n03 May 2026\n-RM5.00\nSplit into Instalments\n",
   );
   assert.equal(transactions.length, 1);
-  assert.equal(errors.length, 1);
-  assert.equal(errors[0].line, 1);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    ignored.map((g) => g.line),
+    [1, 6],
+  );
 });
 
 test("incomplete trailing record is an error", () => {
@@ -68,11 +71,38 @@ test("date without amount is an error, next record still parses", () => {
   assert.equal(transactions[0].type, "Refund");
 });
 
-// Real export — drop the May 2026 paste into tests/fixtures/may-2026.txt
-// to activate (Phase 3 acceptance: 100% of records parse with zero errors).
-test("may-2026 real fixture parses 100%", { skip: !existsSync(join(fixturesDir, "may-2026.txt")) }, () => {
+// Real export — Phase 3 acceptance: 100% of May 2026 records parse with zero errors.
+test("may-2026 real fixture parses 100%", () => {
   const text = readFileSync(join(fixturesDir, "may-2026.txt"), "utf8");
-  const { transactions, errors } = parseShopeePay(text);
+  const { transactions, errors, ignored } = parseShopeePay(text);
+
   assert.deepEqual(errors, []);
-  assert.ok(transactions.length >= 60, `expected 60+ records, got ${transactions.length}`);
+  assert.equal(transactions.length, 58);
+  // Only app chrome is ignored: 3 header lines + 2 footer lines.
+  assert.deepEqual(ignored.map((g) => g.line), [1, 2, 3, 345, 346]);
+
+  const sum = (type) =>
+    Math.round(transactions.filter((t) => t.type === type).reduce((a, t) => a + t.amount, 0) * 100) / 100;
+  const count = (type) => transactions.filter((t) => t.type === type).length;
+
+  assert.equal(count("BNPL"), 38);
+  assert.equal(sum("BNPL"), 976.6);
+  assert.equal(count("Instalment"), 13);
+  assert.equal(sum("Instalment"), 1464.3);
+  assert.equal(count("Bill Payment"), 6);
+  assert.equal(sum("Bill Payment"), 2791.06);
+  assert.equal(count("Refund"), 1);
+  assert.equal(sum("Refund"), 7.5);
+
+  // Description-less records fall back to the type name.
+  assert.ok(transactions.filter((t) => t.type === "Bill Payment").every((t) => t.description === "Bill Payment"));
+  // Spot-check: space after sign + comma amount.
+  const big = transactions.find((t) => t.amount === 1132.32);
+  assert.deepEqual(big, {
+    date: "2026-05-02",
+    type: "Bill Payment",
+    description: "Bill Payment",
+    sign: "-",
+    amount: 1132.32,
+  });
 });
