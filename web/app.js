@@ -25,6 +25,17 @@ function toast(message, isError = false) {
   toast.t = setTimeout(() => (el.className = ""), 3500);
 }
 
+// Cache API reads per page load; cleared whenever data changes.
+const cache = { months: null, summary: new Map() };
+function invalidate() {
+  cache.months = null;
+  cache.summary.clear();
+}
+async function loadSummary(month) {
+  if (!cache.summary.has(month)) cache.summary.set(month, await api.summary(month));
+  return cache.summary.get(month);
+}
+
 function monthSelector(months, selected, onChange) {
   const sel = document.createElement("select");
   sel.className = "month-select";
@@ -36,8 +47,8 @@ function monthSelector(months, selected, onChange) {
 }
 
 async function loadMonths() {
-  const meta = await api.months();
-  return meta.months;
+  if (!cache.months) cache.months = (await api.months()).months;
+  return cache.months;
 }
 
 // ---------- Dashboard ----------
@@ -51,7 +62,7 @@ async function renderDashboard() {
   }
   const month = state.month && months.includes(state.month) ? state.month : months[months.length - 1];
   state.month = month;
-  const s = await api.summary(month);
+  const s = await loadSummary(month);
 
   const maxMerchant = Math.max(...s.topMerchants.map((m) => m.total), 1);
   view.innerHTML = `
@@ -79,8 +90,45 @@ async function renderDashboard() {
         </div>`,
         )
         .join("") || `<div class="empty">No BNPL/Instalment spend this month.</div>`}
-    </div>`;
+    </div>
+    ${months.length >= 2 ? `<h2>Trend</h2><div id="trend" class="loading">Loading…</div>` : ""}`;
   $("#dash-head").append(monthSelector(months, month, (m) => ((state.month = m), renderDashboard())));
+  if (months.length >= 2) renderTrend(months).catch((e) => ($("#trend").textContent = e.message));
+}
+
+async function renderTrend(months) {
+  const recent = months.slice(-6);
+  const sums = await Promise.all(recent.map(loadSummary));
+  const el = $("#trend");
+  if (!el) return; // user navigated away mid-fetch
+
+  const W = 340, H = 150, base = H - 28, top = 14;
+  const max = Math.max(...sums.flatMap((s) => [s.charges, s.payments]), 1);
+  const slot = (W - 20) / recent.length;
+  const x = (i) => 10 + (i + 0.5) * slot;
+  const y = (v) => base - (v / max) * (base - top);
+  const bw = Math.min(14, slot / 3);
+
+  el.classList.remove("loading");
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="trend-svg" role="img" aria-label="Monthly charges vs payments">
+      <line x1="10" y1="${base}" x2="${W - 10}" y2="${base}" class="axis" />
+      ${sums
+        .map((s, i) => {
+          const label = new Date(s.month + "-01").toLocaleString("en-MY", { month: "short" });
+          return `
+        <rect x="${x(i) - bw - 1}" y="${y(s.charges)}" width="${bw}" height="${base - y(s.charges)}" class="bar-charges" rx="2" />
+        <rect x="${x(i) + 1}" y="${y(s.payments)}" width="${bw}" height="${base - y(s.payments)}" class="bar-payments" rx="2" />
+        <text x="${x(i)}" y="${H - 14}" class="trend-label">${label}</text>
+        <text x="${x(i)}" y="${H - 3}" class="trend-net ${s.net > 0 ? "owe" : ""}">${s.net > 0 ? "+" : ""}${Math.round(s.net)}</text>`;
+        })
+        .join("")}
+    </svg>
+    <div class="trend-legend">
+      <span><i class="sw sw-charges"></i>Charges</span>
+      <span><i class="sw sw-payments"></i>Payments</span>
+      <span>numbers = net (RM)</span>
+    </div>`;
 }
 
 // ---------- Transactions ----------
@@ -141,6 +189,7 @@ async function renderTransactions() {
     if (!confirm(`Delete ${t.merchant} ${t.sign}${fmtRM(t.amount)} on ${t.date}?`)) return;
     try {
       await api.remove(t.id, month);
+      invalidate();
       txns.splice(txns.indexOf(t), 1);
       draw();
       toast("Deleted");
@@ -197,6 +246,7 @@ function renderAdd() {
       $("#btn-import").disabled = true;
       try {
         const r = await api.importTransactions(transactions);
+        invalidate();
         toast(`Imported: ${r.added} added, ${r.skipped} duplicates skipped`);
         $("#paste").value = "";
         box.innerHTML = "";
@@ -220,6 +270,7 @@ function renderAdd() {
           amount: Number(f.get("amount")),
         },
       ]);
+      invalidate();
       toast(r.added ? "Added" : "Duplicate — skipped");
       e.target.reset();
     } catch (err) {
@@ -284,7 +335,14 @@ async function navigate(name) {
   try {
     await routes[name]();
   } catch (err) {
-    view.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+    view.innerHTML = `
+      <div class="error-state">
+        <p>${esc(err.message)}</p>
+        <button class="primary" id="btn-retry">Retry</button>
+        <button id="btn-goto-settings">Open Settings</button>
+      </div>`;
+    $("#btn-retry").onclick = () => (invalidate(), navigate(name));
+    $("#btn-goto-settings").onclick = () => navigate("settings");
   }
 }
 

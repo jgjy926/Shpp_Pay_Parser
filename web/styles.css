@@ -135,6 +135,23 @@ button:disabled { opacity: 0.5; }
 
 hr { border: none; border-top: 1px solid var(--line); margin: 1.2rem 0; }
 
+/* Trend chart */
+.trend-svg { width: 100%; height: auto; }
+.trend-svg .axis { stroke: var(--line); stroke-width: 1; }
+.trend-svg .bar-charges { fill: var(--accent); }
+.trend-svg .bar-payments { fill: var(--fg-2); opacity: 0.55; }
+.trend-svg .trend-label { font-size: 10px; fill: var(--fg-2); text-anchor: middle; }
+.trend-svg .trend-net { font-size: 9px; fill: var(--green); text-anchor: middle; }
+.trend-svg .trend-net.owe { fill: var(--accent); }
+.trend-legend { display: flex; gap: 1rem; font-size: 0.75rem; color: var(--fg-2); margin-top: 0.3rem; flex-wrap: wrap; }
+.trend-legend .sw { display: inline-block; width: 0.7em; height: 0.7em; border-radius: 2px; margin-right: 0.3em; }
+.trend-legend .sw-charges { background: var(--accent); }
+.trend-legend .sw-payments { background: var(--fg-2); opacity: 0.55; }
+
+/* Error state */
+.error-state { text-align: center; padding: 2.5rem 1rem; color: var(--fg-2); }
+.error-state button { margin-top: 0.6rem; width: 100%; }
+
 /* Tab bar */
 .tabbar {
   position: fixed; bottom: 0; left: 0; right: 0;

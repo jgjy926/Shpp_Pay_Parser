@@ -26,4 +26,4 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
 - [x] Phase 2 — API endpoints + auth + CORS
 - [x] Phase 3 — client-side parser + fixture tests (58/58 real May 2026 records parse clean)
 - [x] Phase 4 — frontend views
-- [ ] Phase 5 — polish
+- [x] Phase 5 — polish (trend chart, cached loads, error/retry states, PWA manifest)
