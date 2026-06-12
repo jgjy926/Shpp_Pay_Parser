@@ -1,0 +1,7 @@
+# Copy to .dev.vars (gitignored) and fill in for local dev.
+# Production: set each with `npx wrangler secret put <NAME>`.
+KOOFR_EMAIL=you@example.com
+# Generate an app-specific password in Koofr → Settings → Password → App passwords.
+KOOFR_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+# Any long random string; the dashboard sends it as `Authorization: Bearer <token>`.
+DASHBOARD_TOKEN=change-me-long-random
