@@ -44,11 +44,22 @@ export class KoofrClient {
   }
 
   /**
-   * PUT a JSON file. If `etag` is given, the write is conditional (If-Match)
-   * and throws KoofrConflictError on 412. Creates parent folders on demand.
+   * PUT a JSON file. If `etag` is given, throws KoofrConflictError when the
+   * file has changed since that ETag was read. Creates parent folders on demand.
    * Returns the new ETag if the server provides one (otherwise re-read to get it).
+   *
+   * Koofr ignores If-Match on PUT (verified 2026-06: bogus ETag → 201), but
+   * honors it on GET/HEAD — so we pre-check with HEAD. Not atomic; the small
+   * check-then-write race is acceptable per SPEC.md §2 (last-write-wins).
    */
   async putJson(path: string, data: unknown, etag?: string | null): Promise<string | null> {
+    if (etag) {
+      const check = await fetch(this.#url(path), {
+        method: "HEAD",
+        headers: this.#headers({ "If-Match": etag }),
+      });
+      if (check.status === 412) throw new KoofrConflictError(path);
+    }
     const body = JSON.stringify(data);
     const doPut = () =>
       fetch(this.#url(path), {
@@ -61,7 +72,8 @@ export class KoofrClient {
       });
 
     let res = await doPut();
-    if (res.status === 409) {
+    // RFC 4918 says 409 for a missing parent collection, but Koofr returns 404.
+    if (res.status === 409 || res.status === 404) {
       // Parent collection missing — create folders, then retry once.
       await this.#ensureDirs(path);
       res = await doPut();
