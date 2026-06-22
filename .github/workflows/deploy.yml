@@ -25,12 +25,12 @@ jobs:
 
   deploy-pages:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - name: Create Pages project (no-op if exists)
         run: npx wrangler@4 pages project create shpp-tracker --production-branch main || true
       - name: Deploy Pages
         run: npx wrangler@4 pages deploy web --project-name shpp-tracker --branch main
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
