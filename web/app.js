@@ -203,7 +203,7 @@ async function renderTransactions() {
 
 function renderAdd() {
   view.innerHTML = `
-    <h2>Paste from ShopeePay</h2>
+    <h2>Paste from SHPP</h2>
     <textarea id="paste" rows="8" placeholder="BNPL&#10;In Store - SOME SHOP&#10;29 May 2026&#10;-RM10.00"></textarea>
     <button id="btn-parse" class="primary">Preview</button>
     <div id="preview"></div>
