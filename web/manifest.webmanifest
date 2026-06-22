@@ -1,7 +1,7 @@
 {
-  "name": "ShopeePay BNPL Tracker",
+  "name": "SHPP BNPL Tracker",
   "short_name": "BNPL",
-  "description": "Track ShopeePay BNPL, instalments, and bill payments",
+  "description": "Track BNPL, instalments, and bill payments",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#121212",

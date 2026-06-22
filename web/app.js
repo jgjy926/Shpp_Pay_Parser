@@ -285,7 +285,7 @@ function renderSettings() {
   view.innerHTML = `
     <h2>Settings</h2>
     <label>API URL
-      <input id="set-api" value="${esc(cfg.apiBase)}" placeholder="https://shopeepay-tracker.xxx.workers.dev" />
+      <input id="set-api" value="${esc(cfg.apiBase)}" placeholder="https://shpp-tracker.xxx.workers.dev" />
     </label>
     <label>Token <small>(kept only for this browser session)</small>
       <input id="set-token" type="password" value="${esc(cfg.token)}" placeholder="DASHBOARD_TOKEN" />
@@ -311,7 +311,7 @@ function renderSettings() {
       const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `shopeepay-tracker-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `shpp-tracker-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (err) {

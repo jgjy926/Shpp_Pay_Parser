@@ -12,7 +12,7 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
 - `cd worker && npm run dev` — local dev server (http://localhost:8787)
 - `cd worker && npm run deploy` — manual Worker deploy
 - `cd worker && npm run types` — regenerate worker-configuration.d.ts after wrangler.jsonc changes
-- `npx wrangler pages deploy web --project-name shopeepay-tracker` — manual Pages deploy
+- `npx wrangler pages deploy web --project-name shpp-tracker` — manual Pages deploy
 
 ## Rules
 - Secrets (`KOOFR_EMAIL`, `KOOFR_APP_PASSWORD`, `DASHBOARD_TOKEN`) only via `wrangler secret put` / `.dev.vars` (gitignored). Never in code or config.

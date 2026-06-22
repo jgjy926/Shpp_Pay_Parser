@@ -70,7 +70,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const { pathname } = url;
 
   if (pathname === "/api/health") {
-    return Response.json({ ok: true, service: "shopeepay-tracker", phase: 2 });
+    return Response.json({ ok: true, service: "shpp-tracker", phase: 2 });
   }
 
   const token = env.DASHBOARD_TOKEN;
@@ -115,7 +115,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   if (pathname === "/api/export" && request.method === "GET") {
     return Response.json(await store.exportAll(), {
-      headers: { "Content-Disposition": 'attachment; filename="shopeepay-tracker-export.json"' },
+      headers: { "Content-Disposition": 'attachment; filename="shpp-tracker-export.json"' },
     });
   }
 

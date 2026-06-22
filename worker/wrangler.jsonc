@@ -1,13 +1,13 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "shopeepay-tracker",
+  "name": "shpp-tracker",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "observability": {
     "enabled": true
   },
   "vars": {
-    "ALLOWED_ORIGINS": "https://shopeepay-tracker.pages.dev"
+    "ALLOWED_ORIGINS": "https://shpp-tracker.pages.dev"
   }
   // Secrets (set via `wrangler secret put`, never in this file):
   //   KOOFR_EMAIL, KOOFR_APP_PASSWORD, DASHBOARD_TOKEN  — added in Phase 1/2
