@@ -1,5 +1,5 @@
 // Koofr WebDAV client (fetch-based) — see SPEC.md §2/§3.
-// Koofr is the source of truth: JSON files under /shopeepay-tracker/.
+// Koofr is the source of truth: JSON files under /shpp-tracker/.
 // Concurrency: conditional writes with If-Match ETag; caller retries once on conflict.
 
 const DAV_BASE = "https://app.koofr.net/dav/Koofr";
@@ -21,7 +21,7 @@ export class KoofrClient {
   #auth: string;
   #root: string;
 
-  constructor(email: string, appPassword: string, root = "/shopeepay-tracker") {
+  constructor(email: string, appPassword: string, root = "/shpp-tracker") {
     this.#auth = "Basic " + btoa(`${email}:${appPassword}`);
     this.#root = root.replace(/\/+$/, "");
   }
