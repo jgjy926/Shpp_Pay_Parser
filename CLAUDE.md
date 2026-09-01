@@ -25,5 +25,12 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
 - [x] Phase 1 — Koofr WebDAV client (note: Koofr ignores If-Match on PUT; client pre-checks with HEAD)
 - [x] Phase 2 — API endpoints + auth + CORS
 - [x] Phase 3 — client-side parser + fixture tests (58/58 real May 2026 records parse clean)
+  - Parser auto-detects two ShopeePay layouts: per-record (type+date+amount each) and the newer
+    grouped monthly statement (type as a section header, no per-item date, unsigned amounts). Grouped
+    items inherit the statement month (anchored to its last day) derived from the period/due-date
+    header; sign defaults by type (Refund +, else −). Genuine same-merchant/same-amount repeats are kept distinct via a
+    per-occurrence id suffix in `worker/src/store.ts` (occurrence 0 keeps the bare id — dedupe stays
+    backward compatible). Fixture: `tests/fixtures/aug-2026-grouped.txt` (83 records, cross-checked
+    against the statement's own Bill Amount RM2,501.49).
 - [x] Phase 4 — frontend views
 - [x] Phase 5 — polish (trend chart, cached loads, error/retry states, PWA manifest)

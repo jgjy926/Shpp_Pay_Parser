@@ -10,17 +10,34 @@ async function sha1Hex(s: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Deterministic id — dedupe relies on this exact recipe (amount fixed to 2dp). */
+/** Deterministic id base — dedupe relies on this exact recipe (amount fixed to 2dp). */
 export function idInput(t: IncomingTransaction): string {
   return `${t.date}|${t.type}|${t.description}|${t.amount.toFixed(2)}`;
 }
 
-/** `In Store - X` → merchant X / in_store; anything else is an online purchase. */
+/**
+ * Id hash input for the `occ`-th item sharing the same {@link idInput} base
+ * within one import. Grouped monthly statements have no per-item date, so all
+ * items in a statement share a date and genuine same-merchant/same-amount
+ * repeats (e.g. two RM10.50 fishball runs) would otherwise collapse to one.
+ * The first occurrence keeps the bare base id (so re-imports of pre-existing
+ * per-day records still dedupe unchanged); repeats get a stable `|#N` suffix.
+ * Counting by base makes the id set order-independent, so re-importing the
+ * same statement stays idempotent even if ShopeePay reorders the rows.
+ */
+function idHashInput(base: string, occ: number): string {
+  return occ === 0 ? base : `${base}|#${occ}`;
+}
+
+/** `In Store - X` → merchant X / in_store; anything else is an online purchase.
+ *  A leading instalment tag (`[1/3] `) is stripped first so the plan's parts
+ *  group under one merchant. */
 function deriveMerchant(description: string): { merchant: string; channel: "in_store" | "online" } {
-  const m = description.match(/^In Store - (.+)$/i);
+  const cleaned = description.replace(/^\[\d+\/\d+\]\s*/, "").trim();
+  const m = cleaned.match(/^In Store - (.+)$/i);
   return m
     ? { merchant: m[1].trim(), channel: "in_store" }
-    : { merchant: description.trim(), channel: "online" };
+    : { merchant: cleaned, channel: "online" };
 }
 
 export interface MonthSummary {
@@ -68,9 +85,18 @@ export class Store {
   /** Bulk upsert: shard by month, dedupe by deterministic id. */
   async upsert(incoming: IncomingTransaction[]): Promise<{ added: number; skipped: number }> {
     const importedAt = new Date().toISOString();
+    // Assign each item an occurrence index among items sharing its id base, so
+    // legitimate duplicates within a statement each get a distinct id.
+    const bases = incoming.map(idInput);
+    const counts = new Map<string, number>();
+    const occ = bases.map((b) => {
+      const n = counts.get(b) ?? 0;
+      counts.set(b, n + 1);
+      return n;
+    });
     const prepared: Transaction[] = await Promise.all(
-      incoming.map(async (t) => ({
-        id: await sha1Hex(idInput(t)),
+      incoming.map(async (t, i) => ({
+        id: await sha1Hex(idHashInput(bases[i], occ[i])),
         date: t.date,
         type: t.type,
         description: t.description.trim(),
