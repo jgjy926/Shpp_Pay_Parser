@@ -32,5 +32,18 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
     per-occurrence id suffix in `worker/src/store.ts` (occurrence 0 keeps the bare id — dedupe stays
     backward compatible). Fixture: `tests/fixtures/aug-2026-grouped.txt` (83 records, cross-checked
     against the statement's own Bill Amount RM2,501.49).
+- [x] Phase 6 — bill ↔ history merge (SPEC.md §2 "Bill items vs history")
+  - Bill + transaction history can be pasted together in either order; the dated-record span is
+    parsed as history, the rest as the bill. Yearless "paid in full" bills (no Due Date line) borrow
+    the year from the history dates, else the latest non-future year. The parser cross-checks the
+    statement's Bill Amount.
+  - `web/reconcile.js` is pure and shared: the browser uses it for the preview, and the Worker
+    imports it (`../../web/reconcile.js`, `allowJs`) to reconcile stored + incoming records over a
+    ±12-month shard window on every import/delete. Bill items get `txnDate`/`ref`; claimed history
+    gets `billedIn` and drops out of summary totals. Bill item ids still use the statement's last
+    day, so enrichment never changes an id.
+  - Fixtures: `tests/fixtures/sep-2026-bill.txt` (paid-in-full, 44 items = RM1,209.98) and
+    `sep-2026-history.txt` (25 records). No Worker test harness yet; Store was verified by bundling
+    with esbuild and running against an in-memory fake Koofr.
 - [x] Phase 4 — frontend views
 - [x] Phase 5 — polish (trend chart, cached loads, error/retry states, PWA manifest)

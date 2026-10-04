@@ -1,9 +1,28 @@
 // Transaction store on top of Koofr — monthly shards + meta.json (SPEC.md §2).
 
-import { KoofrClient, KoofrConflictError } from "./koofr";
+import { KoofrClient, KoofrConflictError, type KoofrFile } from "./koofr";
 import { EMPTY_META, type IncomingTransaction, type Meta, type Transaction } from "./types";
+import { reconcile } from "../../web/reconcile.js";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Months to read either side of the touched ones when reconciling: covers a
+ *  12-part instalment plan bought up to a year before the bill that bills it. */
+const WINDOW_MONTHS = 12;
+
+function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+interface Shard {
+  etag: string | null;
+  before: string; // serialized as read, to skip unchanged writes
+  txns: Transaction[];
+}
+
+const isCharge = (t: Transaction) => t.type === "BNPL" || t.type === "Instalment";
 
 async function sha1Hex(s: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
@@ -43,7 +62,9 @@ function deriveMerchant(description: string): { merchant: string; channel: "in_s
 export interface MonthSummary {
   month: string;
   count: number;
-  charges: number; // BNPL + Instalment
+  charges: number; // BNPL + Instalment, excluding history already counted via a bill
+  billed: number; // ...of which on this month's statement
+  pending: number; // ...of which from history, not yet on any statement
   payments: number; // Bill Payment
   refunds: number;
   net: number; // charges - payments - refunds
@@ -82,8 +103,68 @@ export class Store {
     return file?.data ?? [];
   }
 
-  /** Bulk upsert: shard by month, dedupe by deterministic id. */
-  async upsert(incoming: IncomingTransaction[]): Promise<{ added: number; skipped: number }> {
+  /**
+   * Load every existing shard within WINDOW_MONTHS of `touched`, let `mutate`
+   * edit them, re-run bill↔history reconciliation over the lot, then write
+   * back only the shards that changed. Retries once on an ETag conflict.
+   */
+  async #withWindow<R>(touched: string[], mutate: (shards: Map<string, Shard>) => R): Promise<R> {
+    const sorted = [...touched].sort();
+    const lo = shiftMonth(sorted[0], -WINDOW_MONTHS);
+    const hi = shiftMonth(sorted[sorted.length - 1], WINDOW_MONTHS);
+    const latestTouched = sorted[sorted.length - 1];
+
+    for (let attempt = 0; ; attempt++) {
+      const meta = await this.getMeta();
+      const months = [...new Set([...meta.months.filter((m) => m >= lo && m <= hi), ...touched])];
+      const files = await Promise.all(
+        months.map((m) => this.koofr.getJson<Transaction[]>(this.#monthPath(m))),
+      );
+      const shards = new Map<string, Shard>();
+      months.forEach((m, i) => {
+        const f: KoofrFile<Transaction[]> | null = files[i];
+        const before = JSON.stringify(f?.data ?? []);
+        shards.set(m, { etag: f?.etag ?? null, before, txns: JSON.parse(before) });
+      });
+
+      const result = mutate(shards);
+
+      const all = [...shards.values()].flatMap((s) => s.txns);
+      const { pairs, billedIn } = reconcile(all);
+      for (const t of all) {
+        if (t.statement) {
+          const h = pairs.get(t) as Transaction | undefined;
+          if (h) {
+            t.txnDate = h.date;
+            t.ref = h.id;
+          }
+        } else {
+          const s = billedIn.get(t);
+          if (s) t.billedIn = s;
+          // Clear only where every statement that could claim this record
+          // (up to WINDOW_MONTHS later) was loaded.
+          else if (t.date.slice(0, 7) <= latestTouched) delete t.billedIn;
+        }
+      }
+
+      try {
+        for (const [m, s] of shards) {
+          s.txns.sort((a, b) => a.date.localeCompare(b.date));
+          if (JSON.stringify(s.txns) === s.before) continue;
+          await this.koofr.putJson(this.#monthPath(m), s.txns, s.etag);
+        }
+      } catch (e) {
+        if (!(e instanceof KoofrConflictError) || attempt >= 1) throw e;
+        continue;
+      }
+      return result;
+    }
+  }
+
+  /** Bulk upsert: shard by month, dedupe by deterministic id, then reconcile. */
+  async upsert(
+    incoming: IncomingTransaction[],
+  ): Promise<{ added: number; skipped: number; billItems: number; dated: number }> {
     const importedAt = new Date().toISOString();
     // Assign each item an occurrence index among items sharing its id base, so
     // legitimate duplicates within a statement each get a distinct id.
@@ -107,6 +188,8 @@ export class Store {
         ...(t.merchant && t.channel
           ? { merchant: t.merchant.trim(), channel: t.channel }
           : deriveMerchant(t.description)),
+        ...(t.statement ? { statement: t.statement } : {}),
+        ...(t.part && t.of ? { part: t.part, of: t.of } : {}),
       })),
     );
 
@@ -116,21 +199,33 @@ export class Store {
       byMonth.set(month, [...(byMonth.get(month) ?? []), t]);
     }
 
-    let added = 0;
-    let skipped = 0;
-    for (const [month, txns] of byMonth) {
-      await this.#updateJson<Transaction[]>(this.#monthPath(month), [], (current) => {
-        const ids = new Set(current.map((t) => t.id));
-        const fresh = txns.filter((t) => {
-          if (ids.has(t.id)) return false;
-          ids.add(t.id); // also dedupes within the batch itself
-          return true;
-        });
-        added += fresh.length;
-        skipped += txns.length - fresh.length;
-        return [...current, ...fresh].sort((a, b) => a.date.localeCompare(b.date));
-      });
-    }
+    const { added, skipped, bills } = await this.#withWindow([...byMonth.keys()], (shards) => {
+      let added = 0;
+      let skipped = 0;
+      const bills = new Set<Transaction>(); // stored copies of this import's bill items
+      for (const [month, txns] of byMonth) {
+        const shard = shards.get(month)!;
+        const existing = new Map(shard.txns.map((t) => [t.id, t]));
+        for (const t of txns) {
+          const old = existing.get(t.id);
+          if (t.statement) bills.add(old ?? t);
+          if (!old) {
+            shard.txns.push(t);
+            existing.set(t.id, t); // also dedupes within the batch itself
+            added++;
+            continue;
+          }
+          skipped++;
+          // Re-importing a bill stored before bill items were tagged upgrades
+          // it in place (same id, since `date` is the statement's last day).
+          if (t.statement && !old.statement) {
+            old.statement = t.statement;
+            if (t.part && t.of) Object.assign(old, { part: t.part, of: t.of });
+          }
+        }
+      }
+      return { added, skipped, bills };
+    });
 
     await this.#updateJson<Meta>("meta.json", EMPTY_META, (meta) => ({
       ...meta,
@@ -138,22 +233,26 @@ export class Store {
       lastSync: importedAt,
     }));
 
-    return { added, skipped };
+    // Reconciliation mutated the stored objects in place, so these now carry
+    // txnDate wherever a dated history record was found.
+    const dated = [...bills].filter((t) => t.txnDate).length;
+    return { added, skipped, billItems: bills.size, dated };
   }
 
-  /** Returns true if the transaction existed and was removed. */
+  /** Returns true if the transaction existed and was removed. Re-reconciles,
+   *  so deleting a bill item returns its history record to pending. */
   async deleteTransaction(month: string, id: string): Promise<boolean> {
-    let found = false;
-    await this.#updateJson<Transaction[]>(this.#monthPath(month), [], (current) => {
-      const next = current.filter((t) => t.id !== id);
-      found = next.length < current.length;
-      return next;
+    return this.#withWindow([month], (shards) => {
+      const shard = shards.get(month)!;
+      const before = shard.txns.length;
+      shard.txns = shard.txns.filter((t) => t.id !== id);
+      return shard.txns.length < before;
     });
-    return found;
   }
 
   async summary(month: string): Promise<MonthSummary> {
-    const txns = await this.getMonth(month);
+    // History already claimed by a statement is counted via its bill item.
+    const txns = (await this.getMonth(month)).filter((t) => !t.billedIn);
 
     const byType: MonthSummary["byType"] = {};
     const merchants = new Map<string, { total: number; count: number }>();
@@ -174,10 +273,14 @@ export class Store {
     const payments = byType["Bill Payment"]?.total ?? 0;
     const refunds = byType["Refund"]?.total ?? 0;
 
+    const billed = round2(txns.filter((t) => isCharge(t) && t.statement).reduce((a, t) => a + t.amount, 0));
+
     return {
       month,
       count: txns.length,
       charges,
+      billed,
+      pending: round2(charges - billed),
       payments,
       refunds,
       net: round2(charges - payments - refunds),

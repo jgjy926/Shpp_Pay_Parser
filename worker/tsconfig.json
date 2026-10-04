@@ -6,6 +6,7 @@
     "lib": ["ES2022"],
     "types": ["./worker-configuration.d.ts"],
     "strict": true,
+    "allowJs": true,
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true

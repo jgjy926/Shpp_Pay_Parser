@@ -39,6 +39,15 @@ function validateIncoming(raw: unknown, index: number): IncomingTransaction {
   if (t.sign !== "+" && t.sign !== "-") throw new ApiError(400, `item ${index}: sign must be + or -`);
   if (typeof t.amount !== "number" || !Number.isFinite(t.amount) || t.amount <= 0)
     throw new ApiError(400, `item ${index}: amount must be a positive number`);
+  if (t.statement !== undefined) {
+    if (typeof t.statement !== "string" || !MONTH_RE.test(t.statement))
+      throw new ApiError(400, `item ${index}: statement must be YYYY-MM`);
+    if (t.date.slice(0, 7) !== t.statement)
+      throw new ApiError(400, `item ${index}: bill item date must fall in its statement month`);
+  }
+  const isPart = (n: unknown) => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 60;
+  if ((t.part !== undefined || t.of !== undefined) && !(isPart(t.part) && isPart(t.of) && (t.part as number) <= (t.of as number)))
+    throw new ApiError(400, `item ${index}: part/of must be integers with 1 <= part <= of`);
   return {
     date: t.date,
     type: t.type as TxType,
@@ -47,6 +56,8 @@ function validateIncoming(raw: unknown, index: number): IncomingTransaction {
     amount: t.amount,
     ...(typeof t.merchant === "string" && t.merchant.trim() ? { merchant: t.merchant } : {}),
     ...(t.channel === "in_store" || t.channel === "online" ? { channel: t.channel } : {}),
+    ...(typeof t.statement === "string" ? { statement: t.statement } : {}),
+    ...(isPart(t.part) ? { part: t.part as number, of: t.of as number } : {}),
   };
 }
 
@@ -96,7 +107,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       throw new ApiError(400, "body must be JSON");
     }
     if (!Array.isArray(body)) throw new ApiError(400, "body must be an array of transactions");
-    if (body.length === 0) return Response.json({ added: 0, skipped: 0 });
+    if (body.length === 0) return Response.json({ added: 0, skipped: 0, billItems: 0, dated: 0 });
     if (body.length > 1000) throw new ApiError(400, "max 1000 transactions per request");
     const txns = body.map(validateIncoming);
     return Response.json(await store.upsert(txns));

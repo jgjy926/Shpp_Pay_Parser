@@ -2,6 +2,7 @@
 
 import { api, cfg } from "./api.js";
 import { parseShopeePay } from "./parser.js";
+import { reconcile } from "./reconcile.js";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const view = $("#view");
@@ -16,6 +17,8 @@ const monthLabel = (m) => {
   const [y, mo] = m.split("-");
   return new Date(+y, +mo - 1, 1).toLocaleString("en-MY", { month: "short", year: "numeric" });
 };
+
+const tag = (text, cls = "") => `<span class="tag ${cls}">${esc(text)}</span>`;
 
 function toast(message, isError = false) {
   const el = $("#toast");
@@ -68,7 +71,11 @@ async function renderDashboard() {
   view.innerHTML = `
     <div class="row" id="dash-head"></div>
     <div class="cards">
-      <div class="card"><div class="card-label">Charges</div><div class="card-value">${fmtRM(s.charges)}</div><div class="card-sub">BNPL + Instalment</div></div>
+      <div class="card"><div class="card-label">Charges</div><div class="card-value">${fmtRM(s.charges)}</div><div class="card-sub">${
+        s.billed || s.pending
+          ? [s.billed && `${fmtRM(s.billed)} billed`, s.pending && `${fmtRM(s.pending)} not yet billed`].filter(Boolean).join(" · ")
+          : "BNPL + Instalment"
+      }</div></div>
       <div class="card"><div class="card-label">Payments</div><div class="card-value">${fmtRM(s.payments)}</div><div class="card-sub">Bill Payment</div></div>
       <div class="card accent"><div class="card-label">Net owed</div><div class="card-value">${fmtRM(s.net)}</div><div class="card-sub">${s.count} transactions${s.refunds ? ` · ${fmtRM(s.refunds)} refunded` : ""}</div></div>
     </div>
@@ -142,7 +149,9 @@ async function renderTransactions() {
   }
   const month = state.month && months.includes(state.month) ? state.month : months[months.length - 1];
   state.month = month;
-  const txns = await api.transactions(month);
+  // Bill items show their real purchase date once matched; sort by it.
+  const shownDate = (t) => t.txnDate ?? t.date;
+  const txns = (await api.transactions(month)).sort((a, b) => shownDate(a).localeCompare(shownDate(b)));
 
   view.innerHTML = `
     <div class="row" id="tx-head"></div>
@@ -167,10 +176,17 @@ async function renderTransactions() {
       rows
         .map(
           (t) => `
-      <li class="tx" data-id="${t.id}">
+      <li class="tx${t.billedIn ? " billed" : ""}" data-id="${t.id}">
         <div class="tx-main">
           <div class="tx-merchant">${esc(t.merchant)}</div>
-          <div class="tx-meta">${t.date} · ${esc(t.type)}${t.channel === "in_store" ? " · in store" : ""}</div>
+          <div class="tx-meta">${t.statement && !t.txnDate ? "date unknown" : shownDate(t)} · ${esc(t.type)}${t.part ? ` ${t.part}/${t.of}` : ""}${t.channel === "in_store" ? " · in store" : ""}
+            ${t.statement ? tag(`${monthLabel(t.statement)} bill`) : ""}${
+              t.billedIn
+                ? tag(`counted on ${monthLabel(t.billedIn)} bill`, "muted")
+                : !t.statement && (t.type === "BNPL" || t.type === "Instalment")
+                  ? tag("not yet billed", "pending")
+                  : ""
+            }</div>
         </div>
         <div class="tx-amount ${t.sign === "+" ? "pos" : ""}">${t.sign}${fmtRM(t.amount)}</div>
         <button class="tx-del" title="Delete" aria-label="Delete">✕</button>
@@ -186,7 +202,7 @@ async function renderTransactions() {
     if (!e.target.classList.contains("tx-del")) return;
     const li = e.target.closest(".tx");
     const t = txns.find((x) => x.id === li.dataset.id);
-    if (!confirm(`Delete ${t.merchant} ${t.sign}${fmtRM(t.amount)} on ${t.date}?`)) return;
+    if (!confirm(`Delete ${t.merchant} ${t.sign}${fmtRM(t.amount)} on ${shownDate(t)}?`)) return;
     try {
       await api.remove(t.id, month);
       invalidate();
@@ -229,15 +245,47 @@ function renderAdd() {
       box.innerHTML = `<div class="empty">Nothing to parse.</div>`;
       return;
     }
+
+    // Preview the bill↔history match within this paste. The Worker re-runs it
+    // on import against stored months too, so earlier history can still match.
+    const { pairs, billedIn } = reconcile(transactions);
+    const bills = transactions.filter((t) => t.statement);
+    const history = transactions.filter((t) => !t.statement);
+    const unbilled = history.filter(
+      (t) => (t.type === "BNPL" || t.type === "Instalment") && !billedIn.has(t),
+    );
+    const row = (t, date, note) =>
+      `<tr class="${billedIn.has(t) ? "dim" : ""}"><td>${date}</td><td>${esc(t.type)}</td><td>${esc(t.description)}${note}</td><td class="r">${t.sign}${fmtRM(t.amount)}</td></tr>`;
+    const stmts = [...new Set(bills.map((t) => t.statement))];
+
     box.innerHTML = `
       ${errors.length ? `<div class="warn">${errors.length} problem(s):<br>${errors.map((e) => `line ${e.line}: ${esc(e.message)}`).join("<br>")}</div>` : ""}
       ${ignored.length ? `<div class="empty" style="padding:0.3rem 0">${ignored.length} non-transaction line(s) skipped</div>` : ""}
+      ${
+        bills.length
+          ? `<div class="note">${stmts.map(monthLabel).join(", ")} bill: <b>${bills.length}</b> item(s), <b>${pairs.size}</b> dated from history in this paste${
+              history.length ? "" : " — paste the transaction history too to fill in dates"
+            }.${unbilled.length ? ` ${unbilled.length} history purchase(s) not on this bill yet.` : ""}</div>`
+          : ""
+      }
       <table class="preview-table">
         <tr><th>Date</th><th>Type</th><th>Description</th><th class="r">Amount</th></tr>
-        ${transactions
-          .map(
-            (t) =>
-              `<tr><td>${t.date}</td><td>${esc(t.type)}</td><td>${esc(t.description)}</td><td class="r">${t.sign}${fmtRM(t.amount)}</td></tr>`,
+        ${bills
+          .map((t) =>
+            row(t, pairs.get(t)?.date ?? `<span class="muted">${monthLabel(t.statement)}</span>`, " " + tag(`${monthLabel(t.statement)} bill`)),
+          )
+          .join("")}
+        ${history
+          .map((t) =>
+            row(
+              t,
+              t.date,
+              billedIn.has(t)
+                ? " " + tag("on bill", "muted")
+                : unbilled.includes(t) && bills.length
+                  ? " " + tag("not yet billed", "pending")
+                  : "",
+            ),
           )
           .join("")}
       </table>
@@ -247,7 +295,10 @@ function renderAdd() {
       try {
         const r = await api.importTransactions(transactions);
         invalidate();
-        toast(`Imported: ${r.added} added, ${r.skipped} duplicates skipped`);
+        toast(
+          `Imported: ${r.added} added, ${r.skipped} duplicates skipped` +
+            (r.billItems ? ` · ${r.dated}/${r.billItems} bill items dated` : ""),
+        );
         $("#paste").value = "";
         box.innerHTML = "";
       } catch (err) {

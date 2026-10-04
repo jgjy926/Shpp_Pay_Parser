@@ -61,6 +61,27 @@ Monthly sharding keeps files small (<50 KB), makes reads fast, and avoids rewrit
 - `id` is deterministic → dedupe on re-import is automatic.
 - `merchant` extracted from `In Store - X` pattern; online product purchases get `channel: online`.
 
+### Bill items vs history
+ShopeePay shows spending two ways. Both are stored and then reconciled:
+
+| | Monthly bill (grouped statement) | Transaction history |
+|---|---|---|
+| Dates | none (statement month only) | per record |
+| Instalments | one line per part, `[k/n]` + part amount | once, at full plan amount |
+| Coverage | exactly what's billed that month | includes purchases not yet billed |
+
+- **Bill item** (`statement: "YYYY-MM"`, optional `part`/`of`): `date` = statement's last day (the id
+  basis, stable). After a match it gets `txnDate` (real purchase date) and `ref` (history record id).
+- **History charge** (BNPL / Instalment / Refund without `statement`): once claimed by a bill item it
+  gets `billedIn: "YYYY-MM"` and is excluded from totals, since the bill item counts it.
+- Matching (`web/reconcile.js`): BNPL/Refund pairs on same type + exact amount + same item, dated in
+  the statement period or ≤62 days before (in-period first, then earliest), one-to-one. Instalment
+  part `[k/n]` pairs with a plan whose amount ≈ part × n (±1 sen per part), or follows an earlier
+  paired part of the same plan. Existing `ref`s are kept.
+- The Worker re-runs reconciliation over stored shards within ±12 months on every import and
+  delete, so the order of imports does not matter (history first, then bill, or the reverse).
+- Summary: `charges` = `billed` (statement items) + `pending` (history not yet on any bill).
+
 ### Concurrency
 Single user, low write volume. Strategy: read file → merge → write with WebDAV `If-Match` ETag. On 412 conflict, re-read and retry once. Last-write-wins is acceptable.
 
@@ -105,6 +126,7 @@ Single-page app, mobile-first (primary use is phone). No build step needed — v
 <+/- RM9,999.99>
 ```
 Regex-based state machine; tolerant of blank lines; handles `RM1,132.32` comma format. Unit tests with the May 2026 dataset (60+ records) as fixture.
+Also parses the grouped monthly bill, and a bill + history pasted together (see §2 "Bill items vs history").
 
 ---
 

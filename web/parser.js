@@ -27,6 +27,13 @@
 //      (Refund → +, everything else → −). The `date`/`amount` fixed-2dp id in
 //      the Worker keeps distinct same-merchant/same-amount items apart, so the
 //      genuine duplicates a statement contains are all preserved.
+//      Grouped items also carry `statement` (YYYY-MM) and, for instalment parts
+//      tagged "[k/n]", `part`/`of` — reconcile.js uses these to match each bill
+//      item to its dated purchase in the transaction history.
+//
+//   Both layouts may be pasted together (bill + transaction history, any
+//   order). The dated records form one contiguous span; whatever sits outside
+//   it is parsed as its own segment (see `parseShopeePay`).
 //
 // Runs in the browser and under `node --test` (pure ES module, no DOM).
 
@@ -83,9 +90,10 @@ function lastDay(year, month) {
  * ("01 Aug - 31 Aug") and the year from the due-date line, rolling the year
  * back when the period sits in the previous calendar year from its due date
  * (Dec → due Jan). Scans only the header lines above the first type section.
+ * With no year anywhere in the header, `yearFor(month)` supplies one.
  * Returns YYYY-MM-DD or null when the month can't be determined.
  */
-function deriveStatementDate(headerLines) {
+function deriveStatementDate(headerLines, yearFor) {
   const text = headerLines.join("\n");
   const due = text.match(DUE_RE);
   const dueYear = due ? Number(due[3]) : null;
@@ -97,10 +105,15 @@ function deriveStatementDate(headerLines) {
     const month = monthNum(p[2]);
     if (!month) continue;
     let year = dueYear ?? (text.match(/\b(20\d{2})\b/) || [])[1];
-    if (year == null) return null;
-    year = Number(year);
-    // Period month later than its due month ⇒ statement is the prior year.
-    if (dueMonth && month > dueMonth) year -= 1;
+    if (year == null) {
+      // "The bill has been paid in full" replaces the Due Date line, leaving
+      // the period with no year at all — borrow one from the caller.
+      year = yearFor(month);
+    } else {
+      year = Number(year);
+      // Period month later than its due month ⇒ statement is the prior year.
+      if (dueMonth && month > dueMonth) year -= 1;
+    }
     return `${year}-${month}-${lastDay(year, month)}`;
   }
 
@@ -118,15 +131,60 @@ function deriveStatementDate(headerLines) {
 // Grouped mode if amount lines clearly outnumber date lines — i.e. items are
 // listed without their own dates. Record mode carries one date per amount, so
 // amounts ≈ dates there; grouped statements have amounts but ~no per-line dates.
-function looksGrouped(lines) {
+function countLines(lines, start, end) {
   let amounts = 0;
   let dates = 0;
-  for (const raw of lines) {
-    const line = raw.trim();
+  for (let i = start; i < end; i++) {
+    const line = lines[i].trim();
     if (AMOUNT_RE.test(line)) amounts++;
     if (DATE_RE.test(line)) dates++;
   }
+  return { amounts, dates };
+}
+
+function looksGrouped(lines, start, end) {
+  const { amounts, dates } = countLines(lines, start, end);
   return amounts > 0 && amounts > dates * 2;
+}
+
+function nextNonBlank(lines, i) {
+  while (i < lines.length && !lines[i].trim()) i++;
+  return i;
+}
+
+/** Line range [start, end) spanning every well-formed dated record, or null. */
+function datedSpan(lines) {
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!DATE_RE.test(lines[i].trim())) continue;
+    const j = nextNonBlank(lines, i + 1);
+    if (j >= lines.length || !AMOUNT_RE.test(lines[j].trim())) continue;
+    if (first === -1) first = i;
+    last = j;
+  }
+  if (first === -1) return null;
+  let start = first;
+  while (start > 0 && !matchType(lines[start].trim())) start--;
+  return { start, end: last + 1 };
+}
+
+/**
+ * Year for a statement month whose header has none: a dated record from that
+ * month in the same paste wins; otherwise the most recent such month that is
+ * not in the future relative to `today`.
+ */
+function yearResolver(lines, today) {
+  const seen = new Map(); // "MM" -> year
+  for (const raw of lines) {
+    const d = parseDate(raw.trim());
+    if (d) seen.set(d.slice(5, 7), Number(d.slice(0, 4)));
+  }
+  return (month) => {
+    if (seen.has(month)) return seen.get(month);
+    const y = today.getFullYear();
+    return Number(month) > today.getMonth() + 1 ? y - 1 : y;
+  };
 }
 
 /**
@@ -136,37 +194,87 @@ function looksGrouped(lines) {
  * statement summary, footer buttons) — expected in every real paste, so not an
  * error.
  */
-export function parseShopeePay(text) {
+export function parseShopeePay(text, { today = new Date() } = {}) {
   const lines = text.split(/\r?\n/);
-  return looksGrouped(lines) ? parseGrouped(lines) : parseRecords(lines);
+  const yearFor = yearResolver(lines, today);
+  const span = datedSpan(lines);
+  if (!span) {
+    return looksGrouped(lines, 0, lines.length)
+      ? parseGrouped(lines, 0, lines.length, yearFor)
+      : parseRecords(lines, 0, lines.length);
+  }
+
+  // Dated records (transaction history) form one contiguous span; a bill
+  // pasted before or after it is a separate segment, as is app chrome.
+  const parts = [];
+  const outer = (start, end) => {
+    if (start >= end) return;
+    const { amounts, dates } = countLines(lines, start, end);
+    if (amounts > 0 && amounts > dates * 2) {
+      parts.push(parseGrouped(lines, start, end, yearFor));
+    } else if (amounts || dates) {
+      parts.push(parseRecords(lines, start, end));
+    } else {
+      // No amounts or dates: filter tabs ("All / Checkout / Bill Payment /
+      // Refund"), month headers, footers — chrome, even where it spells a type.
+      const ignored = [];
+      for (let i = start; i < end; i++) {
+        if (lines[i].trim()) ignored.push({ line: i + 1, text: lines[i].trim() });
+      }
+      parts.push({ transactions: [], errors: [], ignored });
+    }
+  };
+  outer(0, span.start);
+  parts.push(parseRecords(lines, span.start, span.end));
+  outer(span.end, lines.length);
+
+  return {
+    transactions: parts.flatMap((p) => p.transactions),
+    errors: parts.flatMap((p) => p.errors),
+    ignored: parts.flatMap((p) => p.ignored),
+  };
 }
 
 // ---- Grouped statement format (type as section header, no per-item dates) ----
 
-function parseGrouped(lines) {
+const PART_RE = /^\[(\d+)\/(\d+)\]/;
+
+function parseGrouped(lines, start, end, yearFor) {
   const transactions = [];
   const errors = [];
   const ignored = [];
 
   // The header sits above the first type section; mine it for the statement
-  // date and the declared transaction count.
-  const firstType = lines.findIndex((l) => matchType(l.trim()));
-  const header = firstType === -1 ? lines : lines.slice(0, firstType);
-  const statementDate = deriveStatementDate(header);
+  // date, the declared transaction count and the bill amount.
+  let firstType = start;
+  while (firstType < end && !matchType(lines[firstType].trim())) firstType++;
+  const header = lines.slice(start, firstType);
+  const statementDate = deriveStatementDate(header, yearFor);
+  const statement = statementDate?.slice(0, 7);
   let expected = null;
   let totalLine = 0;
+  let billAmount = null;
+  let billLine = 0;
   header.forEach((l, idx) => {
     const m = l.match(TOTAL_RE);
     if (m) {
       expected = Number(m[1]);
-      totalLine = idx + 1;
+      totalLine = start + idx + 1;
+    }
+    if (/^Bill Amount$/i.test(l.trim())) {
+      const j = nextNonBlank(header, idx + 1);
+      const amt = j < header.length ? parseAmount(header[j].trim()) : null;
+      if (amt) {
+        billAmount = amt.amount;
+        billLine = start + idx + 1;
+      }
     }
   });
 
   let section = null;
   let desc = [];
 
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = start; i < end; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const lineNo = i + 1;
@@ -195,12 +303,16 @@ function parseGrouped(lines) {
         desc = [];
         continue;
       }
+      const description = desc.map((d) => d.text).join(" ").trim() || section;
+      const part = description.match(PART_RE);
       transactions.push({
         date: statementDate,
         type: section,
-        description: desc.map((d) => d.text).join(" ").trim() || section,
+        description,
         sign: parsed.sign ?? defaultSign(section),
         amount: parsed.amount,
+        statement,
+        ...(part ? { part: Number(part[1]), of: Number(part[2]) } : {}),
       });
       desc = [];
       continue;
@@ -219,12 +331,23 @@ function parseGrouped(lines) {
     });
   }
 
+  // Cross-check against the statement's own total (charges less refunds).
+  if (billAmount != null && transactions.length) {
+    const net = transactions.reduce((a, t) => a + (t.sign === "+" ? -t.amount : t.amount), 0);
+    if (Math.abs(net - billAmount) >= 0.005) {
+      errors.push({
+        line: billLine,
+        message: `statement Bill Amount is RM${billAmount.toFixed(2)} but parsed items total RM${net.toFixed(2)}`,
+      });
+    }
+  }
+
   return { transactions, errors, ignored };
 }
 
 // ---- Per-record format (each record carries its own date + amount) ----
 
-function parseRecords(lines) {
+function parseRecords(lines, start, end) {
   const transactions = [];
   const errors = [];
   const ignored = [];
@@ -236,7 +359,7 @@ function parseRecords(lines) {
     current = null;
   };
 
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = start; i < end; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const lineNo = i + 1;
@@ -256,9 +379,8 @@ function parseRecords(lines) {
     const date = parseDate(line);
     if (date) {
       // Next non-blank line must be the amount.
-      let j = i + 1;
-      while (j < lines.length && !lines[j].trim()) j++;
-      const amountLine = j < lines.length ? lines[j].trim() : "";
+      const j = nextNonBlank(lines, i + 1);
+      const amountLine = j < end ? lines[j].trim() : "";
       const parsed = parseAmount(amountLine);
       if (!parsed) {
         fail(lineNo, `expected +/- RM amount after date, got: "${amountLine}"`);
