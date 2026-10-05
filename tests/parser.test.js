@@ -353,3 +353,13 @@ test("sameItem tolerates promo tags, [k/n] prefixes and suffixes", () => {
   assert.ok(!sameItem("In Store - NG CHOY WAN", "In Store - NG CHOY"));
   assert.ok(!sameItem("In Store - THONG 1964", "In Store - GREENS FRESH"));
 });
+
+test("reconcile: instalment part ignores a same-shop, same-amount plan from the wrong month", () => {
+  const may = hist("2026-05-01", "Instalment", "In Store - GOH JIAN YU", 270);
+  const sep = hist("2026-09-06", "Instalment", "In Store - GOH JIAN YU", 270);
+  const p1 = bill("2026-09", "[1/3] In Store - GOH JIAN YU", 90, { part: 1, of: 3 });
+  assert.equal(reconcile([may, sep, p1]).pairs.get(p1), sep);
+  // [3/3] in Sep comes from a plan bought ~2 months earlier, not May (4 months).
+  const p3 = bill("2026-09", "[3/3] In Store - GOH JIAN YU", 90, { part: 3, of: 3 });
+  assert.equal(reconcile([may, p3]).pairs.size, 0);
+});

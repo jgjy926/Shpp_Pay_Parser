@@ -70,8 +70,9 @@ const LOOKBACK_DAYS = 62;
  *    LOOKBACK_DAYS before it. One history record per bill item. Prefers an
  *    in-period record, then the earliest.
  *  - Instalment part [k/n] ↔ history plan record whose amount ≈ part × n
- *    (±1 sen per part for rounding), same item, dated on/before the period
- *    end. A plan is shared by its parts across statements, but each part
+ *    (±1 sen per part for rounding), same item, bought 0–1 months before
+ *    statement − (k−1) (closest first). A plan is shared by its parts across
+ *    statements, but each part
  *    number claims a plan once. A later part first follows an earlier,
  *    already-paired part of the same plan.
  *  - An existing `ref` that still resolves is kept as-is.
@@ -127,14 +128,23 @@ export function reconcile(records) {
           break;
         }
       }
-      match ??= history.find(
-        (h) =>
-          h.type === "Instalment" &&
-          Math.abs(cents(h.amount) - cents(b.amount) * b.of) <= b.of &&
-          dayMs(h.date) <= end &&
-          !partClaims.get(h)?.has(b.part) &&
-          sameItem(h.description, b.description),
-      );
+      // Part k bills k-1 months after the first part, which bills in the
+      // purchase month or the one after — so the plan was bought 0–1 months
+      // before statement − (k−1). Repeat purchases of the same item/amount in
+      // other months (a regular RM270 shop visit) must not steal the match.
+      const lag = (h) => monthIndex(b.statement) - monthIndex(h.date) - (b.part - 1);
+      match ??=
+        history
+          .filter(
+            (h) =>
+              h.type === "Instalment" &&
+              Math.abs(cents(h.amount) - cents(b.amount) * b.of) <= b.of &&
+              dayMs(h.date) <= end &&
+              (lag(h) === 0 || lag(h) === 1) &&
+              !partClaims.get(h)?.has(b.part) &&
+              sameItem(h.description, b.description),
+          )
+          .sort((x, y) => lag(x) - lag(y))[0] ?? null;
     } else {
       const candidates = history.filter(
         (h) =>

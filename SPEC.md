@@ -35,9 +35,10 @@
 ### Storage layout on Koofr
 ```
 /shopeepay-tracker/
-  transactions/2026-05.json     ← one file per month
+  transactions/2026-05.json     ← bill items, one file per statement month
+  history/2026-05.json          ← transaction history, one file per purchase month
   transactions/2026-06.json
-  meta.json                     ← list of months, last sync, schema version
+  meta.json                     ← bill months, history months, last sync, schema version
 ```
 
 Monthly sharding keeps files small (<50 KB), makes reads fast, and avoids rewriting one giant file on every import.
@@ -62,7 +63,7 @@ Monthly sharding keeps files small (<50 KB), makes reads fast, and avoids rewrit
 - `merchant` extracted from `In Store - X` pattern; online product purchases get `channel: online`.
 
 ### Bill items vs history
-ShopeePay shows spending two ways. Both are stored and then reconciled:
+ShopeePay shows spending two ways. They are pasted in separate panels, stored separately, then reconciled:
 
 | | Monthly bill (grouped statement) | Transaction history |
 |---|---|---|
@@ -72,15 +73,16 @@ ShopeePay shows spending two ways. Both are stored and then reconciled:
 
 - **Bill item** (`statement: "YYYY-MM"`, optional `part`/`of`): `date` = statement's last day (the id
   basis, stable). After a match it gets `txnDate` (real purchase date) and `ref` (history record id).
-- **History charge** (BNPL / Instalment / Refund without `statement`): once claimed by a bill item it
-  gets `billedIn: "YYYY-MM"` and is excluded from totals, since the bill item counts it.
+- **History record** (`history/`, never `statement`): once a bill item claims a purchase it gets
+  `billedIn: "YYYY-MM"`; it then counts via the bill. Bill Payments here are the repayments.
 - Matching (`web/reconcile.js`): BNPL/Refund pairs on same type + exact amount + same item, dated in
   the statement period or ≤62 days before (in-period first, then earliest), one-to-one. Instalment
-  part `[k/n]` pairs with a plan whose amount ≈ part × n (±1 sen per part), or follows an earlier
-  paired part of the same plan. Existing `ref`s are kept.
+  part `[k/n]` pairs with a plan whose amount ≈ part × n (±1 sen per part) bought 0–1 months before
+  statement − (k−1), or follows an earlier paired part of the same plan. Existing `ref`s are kept.
 - The Worker re-runs reconciliation over stored shards within ±12 months on every import and
   delete, so the order of imports does not matter (history first, then bill, or the reverse).
-- Summary: `charges` = `billed` (statement items) + `pending` (history not yet on any bill).
+- Summary: month with a bill → `charges` = bill total; without → the month's history purchases
+  (estimate). `pending` = history purchases not yet on any bill; `payments` = repayments.
 
 ### Concurrency
 Single user, low write volume. Strategy: read file → merge → write with WebDAV `If-Match` ETag. On 412 conflict, re-read and retry once. Last-write-wins is acceptable.
@@ -94,9 +96,11 @@ Single user, low write volume. Strategy: read file → merge → write with WebD
 | Method | Route | Purpose |
 |---|---|---|
 | GET | `/api/months` | List available months (from meta.json) |
-| GET | `/api/transactions?month=2026-05` | Fetch one month |
-| POST | `/api/transactions` | Bulk upsert (array). Worker shards by month, dedupes by id, returns `{added, skipped}` |
-| DELETE | `/api/transactions/:id?month=` | Remove one record |
+| GET | `/api/transactions?month=2026-05` | Bill items for one statement month |
+| POST | `/api/transactions` | Bulk upsert bill items (each needs `statement`). Dedupes by id, reconciles, returns `{added, skipped, billItems, dated}` |
+| DELETE | `/api/transactions/:id?month=` | Remove one bill item |
+| GET / POST / DELETE | `/api/history…` | Same, for transaction history (no `statement`) |
+| POST | `/api/migrate[?dryRun=1]` | Split pre-separation data into bill / history stores |
 | GET | `/api/summary?month=` | Server-computed totals: charges, payments, refunds, net, top merchants |
 | GET | `/api/export` | Full dump (all months) as JSON — backup |
 

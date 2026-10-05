@@ -23,8 +23,8 @@ export interface Transaction {
   txnDate?: string; // real purchase date, from the matched history record
   ref?: string; // id of the matched history record
 
-  // History charges (BNPL / Instalment plan / Refund, no `statement`) — set
-  // once a bill item claims this record; it is then counted via the bill.
+  // History records (history/ shards, never `statement`) — set once a bill
+  // item claims this purchase; it is then counted via the bill.
   billedIn?: string; // YYYY-MM of the earliest claiming statement
 }
 
@@ -45,8 +45,12 @@ export interface IncomingTransaction {
 
 export interface Meta {
   schemaVersion: 1;
-  months: string[]; // sorted ascending, e.g. ["2026-05", "2026-06"]
+  months: string[]; // bill shards (transactions/), sorted ascending, e.g. ["2026-05", "2026-06"]
+  historyMonths: string[]; // history shards (history/), sorted ascending
   lastSync: string | null;
 }
 
-export const EMPTY_META: Meta = { schemaVersion: 1, months: [], lastSync: null };
+export const EMPTY_META: Meta = { schemaVersion: 1, months: [], historyMonths: [], lastSync: null };
+
+/** Which Koofr folder a record lives in: the monthly bill or the transaction history. */
+export type Kind = "bill" | "history";

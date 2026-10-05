@@ -45,9 +45,14 @@ async function req(path, opts = {}) {
 export const api = {
   health: () => req("/api/health"),
   months: () => req("/api/months"),
-  transactions: (month) => req(`/api/transactions?month=${month}`),
-  importTransactions: (txns) => req("/api/transactions", { method: "POST", body: JSON.stringify(txns) }),
-  remove: (id, month) => req(`/api/transactions/${id}?month=${month}`, { method: "DELETE" }),
+  // Bill items live under /api/transactions, transaction history under /api/history.
+  bill: (month) => req(`/api/transactions?month=${month}`),
+  history: (month) => req(`/api/history?month=${month}`),
+  importItems: (kind, txns) =>
+    req(kind === "bill" ? "/api/transactions" : "/api/history", { method: "POST", body: JSON.stringify(txns) }),
+  remove: (kind, id, month) =>
+    req(`/api/${kind === "bill" ? "transactions" : "history"}/${id}?month=${month}`, { method: "DELETE" }),
   summary: (month) => req(`/api/summary?month=${month}`),
   exportAll: () => req("/api/export"),
+  migrate: (dryRun) => req(`/api/migrate${dryRun ? "?dryRun=1" : ""}`, { method: "POST" }),
 };

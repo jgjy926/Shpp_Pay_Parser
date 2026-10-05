@@ -3,7 +3,7 @@
 
 import { KoofrClient } from "./koofr";
 import { Store } from "./store";
-import { TX_TYPES, type IncomingTransaction, type TxType } from "./types";
+import { TX_TYPES, type IncomingTransaction, type Kind, type TxType } from "./types";
 import type { Env } from "./env";
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
@@ -81,7 +81,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const { pathname } = url;
 
   if (pathname === "/api/health") {
-    return Response.json({ ok: true, service: "shpp-tracker", phase: 2 });
+    return Response.json({ ok: true, service: "shpp-tracker", phase: 7 });
   }
 
   const token = env.DASHBOARD_TOKEN;
@@ -95,29 +95,45 @@ async function route(request: Request, env: Env): Promise<Response> {
     return Response.json(await store.getMeta());
   }
 
-  if (pathname === "/api/transactions" && request.method === "GET") {
-    return Response.json(await store.getMonth(requireMonth(url)));
-  }
+  // /api/transactions = bill items (monthly statement); /api/history = transaction history.
+  const collection = pathname.match(/^\/api\/(transactions|history)(?:\/([0-9a-f]{40}))?$/);
+  if (collection) {
+    const kind: Kind = collection[1] === "transactions" ? "bill" : "history";
+    const id = collection[2];
 
-  if (pathname === "/api/transactions" && request.method === "POST") {
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      throw new ApiError(400, "body must be JSON");
+    if (!id && request.method === "GET") {
+      return Response.json(await store.getShard(kind, requireMonth(url)));
     }
-    if (!Array.isArray(body)) throw new ApiError(400, "body must be an array of transactions");
-    if (body.length === 0) return Response.json({ added: 0, skipped: 0, billItems: 0, dated: 0 });
-    if (body.length > 1000) throw new ApiError(400, "max 1000 transactions per request");
-    const txns = body.map(validateIncoming);
-    return Response.json(await store.upsert(txns));
+
+    if (!id && request.method === "POST") {
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        throw new ApiError(400, "body must be JSON");
+      }
+      if (!Array.isArray(body)) throw new ApiError(400, "body must be an array of transactions");
+      if (body.length === 0) return Response.json({ added: 0, skipped: 0, billItems: 0, dated: 0 });
+      if (body.length > 1000) throw new ApiError(400, "max 1000 transactions per request");
+      const txns = body.map(validateIncoming);
+      txns.forEach((t, i) => {
+        if (kind === "bill" && !t.statement)
+          throw new ApiError(400, `item ${i}: bill items need a statement month — post history to /api/history`);
+        if (kind === "history" && t.statement)
+          throw new ApiError(400, `item ${i}: statement items belong in /api/transactions`);
+      });
+      return Response.json(await store.upsert(kind, txns));
+    }
+
+    if (id && request.method === "DELETE") {
+      const removed = await store.delete(kind, requireMonth(url), id);
+      if (!removed) throw new ApiError(404, "transaction not found in that month");
+      return Response.json({ deleted: true });
+    }
   }
 
-  const deleteMatch = pathname.match(/^\/api\/transactions\/([0-9a-f]{40})$/);
-  if (deleteMatch && request.method === "DELETE") {
-    const removed = await store.deleteTransaction(requireMonth(url), deleteMatch[1]);
-    if (!removed) throw new ApiError(404, "transaction not found in that month");
-    return Response.json({ deleted: true });
+  if (pathname === "/api/migrate" && request.method === "POST") {
+    return Response.json(await store.migrate(url.searchParams.get("dryRun") === "1"));
   }
 
   if (pathname === "/api/summary" && request.method === "GET") {

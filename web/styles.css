@@ -120,8 +120,13 @@ button:disabled { opacity: 0.5; }
 .tx-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
 .tx-amount.pos { color: var(--green); }
 .tx-del { background: none; border: none; color: var(--fg-2); padding: 0.3rem; }
-.tx.billed { opacity: 0.55; }
-.tx.billed .tx-amount { text-decoration: line-through; }
+
+/* Segmented toggle (Bill / Transactions) */
+.seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 2px; margin-left: auto; }
+.seg button { border: none; background: none; padding: 0.4rem 0.75rem; border-radius: 8px; font-size: 0.85rem; color: var(--fg-2); }
+.seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.hint { font-size: 0.82rem; color: var(--fg-2); margin: 0 0 0.6rem; }
+.card.wide { grid-column: 1 / -1; }
 
 .tag {
   display: inline-block; font-size: 0.7rem; line-height: 1.3;
