@@ -119,7 +119,29 @@ button:disabled { opacity: 0.5; }
 .tx-meta { font-size: 0.78rem; color: var(--fg-2); }
 .tx-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
 .tx-amount.pos { color: var(--green); }
-.tx-del { background: none; border: none; color: var(--fg-2); padding: 0.3rem; }
+.tx { cursor: pointer; }
+.tx:focus-visible { outline: 2px solid var(--accent); }
+.tx-chev { color: var(--fg-2); font-size: 1.2rem; line-height: 1; }
+
+/* Transaction detail sheet */
+.sheet {
+  border: none; border-radius: 16px 16px 0 0;
+  background: var(--bg); color: var(--fg);
+  width: 100%; max-width: 560px; max-height: 85vh;
+  margin: auto auto 0; padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+}
+.sheet::backdrop { background: rgb(0 0 0 / 0.45); }
+.sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem; }
+.sheet-title { font-weight: 700; font-size: 1.05rem; overflow-wrap: anywhere; }
+.sheet-amount { font-weight: 700; font-size: 1.25rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sheet-amount.pos { color: var(--green); }
+.detail { display: grid; grid-template-columns: auto 1fr; gap: 0.45rem 0.9rem; margin: 1rem 0; font-size: 0.88rem; }
+.detail dt { color: var(--fg-2); }
+.detail dd { margin: 0; overflow-wrap: anywhere; }
+.detail .tag { margin-left: 0; }
+.sheet-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+.sheet-actions button:not(.primary) { width: 100%; color: #c0392b; }
+.sheet-actions .primary { margin-top: 0.2rem; }
 
 /* Segmented toggle (Bill / Transactions) */
 .seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 2px; margin-left: auto; }

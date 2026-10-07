@@ -49,7 +49,12 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
     `pending` = history purchases not yet on any bill; `payments` = repayments from history.
   - `POST /api/migrate[?dryRun=1]` (Settings ▸ Check older data) splits pre-Phase-7 data: untagged
     rows in bill shards move to history/, except grouped-statement rows (month's last day, ≥5 in one
-    import batch) which get tagged as bill items.
+    import batch) which get tagged as bill items. Until then the Worker leaves untagged bill-shard
+    rows out of reconciliation (they used to be mistaken for history), and the Transactions tab
+    shows a banner pointing to the migration.
+  - Transactions tab is one combined list (no Bill/Transactions toggle): a matched bill item and its
+    history record are one row; tapping a row opens a detail sheet. The Add tab still has separate
+    Bill / Transactions panels, since the stores stay separate.
   - Fixtures: `tests/fixtures/sep-2026-bill.txt` (paid-in-full, 44 items = RM1,209.98) and
     `sep-2026-history.txt` (25 records). No Worker test harness yet; Store was verified by bundling
     with esbuild and running against an in-memory fake Koofr (both import orders + migration).

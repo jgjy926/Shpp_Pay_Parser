@@ -181,7 +181,12 @@ export class Store {
 
       const result = mutate(shards, get);
 
-      const bills = [...shards.values()].filter((s) => s.kind === "bill").flatMap((s) => s.txns);
+      // Untagged rows in bill shards are pre-split data awaiting /api/migrate;
+      // reconcile would take them for history and pair bill items with them.
+      const bills = [...shards.values()]
+        .filter((s) => s.kind === "bill")
+        .flatMap((s) => s.txns)
+        .filter((t) => t.statement);
       const history = [...shards.values()].filter((s) => s.kind === "history").flatMap((s) => s.txns);
       const { pairs, billedIn } = reconcile([...bills, ...history]);
       for (const b of bills) {

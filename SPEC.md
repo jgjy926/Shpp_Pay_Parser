@@ -76,9 +76,11 @@ ShopeePay shows spending two ways. They are pasted in separate panels, stored se
 - **History record** (`history/`, never `statement`): once a bill item claims a purchase it gets
   `billedIn: "YYYY-MM"`; it then counts via the bill. Bill Payments here are the repayments.
 - Matching (`web/reconcile.js`): BNPL/Refund pairs on same type + exact amount + same item, dated in
-  the statement period or ≤62 days before (in-period first, then earliest), one-to-one. Instalment
-  part `[k/n]` pairs with a plan whose amount ≈ part × n (±1 sen per part) bought 0–1 months before
-  statement − (k−1), or follows an earlier paired part of the same plan. Existing `ref`s are kept.
+  the statement period or ≤62 days before (in-store payments: ≤1 day before), in-period first, then
+  earliest, one-to-one. Instalment part `[k/n]` pairs with a plan whose amount ≈ part × n (±1 sen
+  per part; the last part absorbs rounding, ±n sen) bought 0–1 months before statement − (k−1), or
+  follows an earlier paired part of the same plan. Existing `ref`s are kept while they still fit.
+  Untagged (pre-split) rows in bill shards are ignored until `/api/migrate` sorts them.
 - The Worker re-runs reconciliation over stored shards within ±12 months on every import and
   delete, so the order of imports does not matter (history first, then bill, or the reverse).
 - Summary: month with a bill → `charges` = bill total; without → the month's history purchases
@@ -116,7 +118,10 @@ Single-page app, mobile-first (primary use is phone). No build step needed — v
 
 **Views (bottom tab bar):**
 1. **Dashboard** — month selector; cards for total charges (BNPL + Instalment), payments made, net owed; top-merchant bar chart; type breakdown; multi-month trend line.
-2. **Transactions** — list with filters (type, month, merchant search), swipe/tap to delete.
+2. **Transactions** — one combined list per month: bill items (shown with their matched purchase
+   date) plus history records not on that month's bill (unbilled purchases, purchases billed in
+   another month, repayments). Filters (type, month, merchant search). Tap a row for a detail sheet
+   (bill line + fuller history title, purchase date, statement, instalment plan) with delete.
 3. **Add** —
    - *Paste mode:* textarea → client-side parser → preview table → confirm import (POST bulk).
    - *Manual form:* type, description, date, amount.

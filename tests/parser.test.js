@@ -363,3 +363,31 @@ test("reconcile: instalment part ignores a same-shop, same-amount plan from the 
   const p3 = bill("2026-09", "[3/3] In Store - GOH JIAN YU", 90, { part: 3, of: 3 });
   assert.equal(reconcile([may, p3]).pairs.size, 0);
 });
+
+test("reconcile: in-store payments bill in their own month, online orders may bill later", () => {
+  const jul = hist("2026-07-28", "BNPL", "In Store - THONG 1964 ENTERPRISE", 20);
+  const store = bill("2026-08", "In Store - THONG 1964 ENTERPRISE", 20);
+  assert.equal(reconcile([jul, store]).pairs.size, 0);
+  // A day's grace for a late-night payment.
+  const late = hist("2026-07-31", "BNPL", "In Store - THONG 1964 ENTERPRISE", 20);
+  assert.equal(reconcile([late, store]).pairs.get(store), late);
+  const order = hist("2026-07-28", "BNPL", "Hot Sale Cartoon Mask 50pcs Kid Kuromi", 13.79);
+  const online = bill("2026-08", "Hot Sale Cartoon Mask 50pcs Kid Kuromi", 13.79);
+  assert.equal(reconcile([order, online]).pairs.get(online), order);
+});
+
+test("reconcile: an existing ref that no longer fits is re-matched", () => {
+  const old = hist("2026-07-01", "BNPL", "In Store - SHOP", 10, { id: "old" });
+  const now = hist("2026-09-05", "BNPL", "In Store - SHOP", 10, { id: "now" });
+  const item = bill("2026-09", "In Store - SHOP", 10, { ref: "old" });
+  assert.equal(reconcile([old, now, item]).pairs.get(item), now);
+});
+
+test("reconcile: the last instalment part absorbs rounding and still follows its plan", () => {
+  const plan = hist("2026-04-11", "Instalment", "NEW 4G MODIFIED POCKET MODEM OLAX MT80", 117.81);
+  const p5 = bill("2026-08", "[5/6] NEW 4G MODIFIED POCKET MODEM OLAX MT80", 19.63, { part: 5, of: 6 });
+  const p6 = bill("2026-09", "[6/6] NEW 4G MODIFIED POCKET MODEM OLAX MT80", 19.66, { part: 6, of: 6 });
+  const { pairs } = reconcile([plan, p5, p6]);
+  assert.equal(pairs.get(p5), plan);
+  assert.equal(pairs.get(p6), plan);
+});

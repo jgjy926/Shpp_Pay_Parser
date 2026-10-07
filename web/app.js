@@ -148,9 +148,11 @@ async function renderTrend(months) {
 
 // ---------- Transactions ----------
 
-// Two sources, two lists: bill items (monthly statement) and the transaction
-// history. Bill items show their real purchase date once matched.
-const shownDate = (t) => t.txnDate ?? t.date;
+// One combined list per month. A bill item matched to its history record is a
+// single row (the bill's amount, the purchase's real date); tapping a row opens
+// the detail sheet with both sides. History records not on this month's bill
+// (repayments, unbilled purchases, purchases billed in another month) are rows
+// of their own, tagged with their billing status.
 const isPurchase = (t) => t.type === "BNPL" || t.type === "Instalment";
 
 function segmented(options, selected, onChange) {
@@ -166,6 +168,22 @@ function segmented(options, selected, onChange) {
   return el;
 }
 
+/** Rows for one month: `bill` and/or `hist` record; `date` = purchase date or null. */
+function combineRows(bills, history, histById) {
+  const claimed = new Set(bills.map((b) => b.ref).filter(Boolean));
+  const rows = bills.map((b) => {
+    const hist = (b.ref && histById.get(b.ref)) || null;
+    return { key: `b:${b.id}`, bill: b, hist, date: hist?.date ?? b.txnDate ?? null };
+  });
+  for (const h of history) if (!claimed.has(h.id)) rows.push({ key: `h:${h.id}`, bill: null, hist: h, date: h.date });
+  // By date; undated bill items last.
+  return rows.sort((a, b) => (a.date ?? "9").localeCompare(b.date ?? "9"));
+}
+
+const rowTxn = (r) => r.bill ?? r.hist;
+const fmtDate = (iso) =>
+  new Date(`${iso}T00:00:00`).toLocaleDateString("en-MY", { day: "numeric", month: "short", year: "numeric" });
+
 async function renderTransactions() {
   view.innerHTML = `<div class="loading">Loading…</div>`;
   const months = await loadMonths();
@@ -175,10 +193,26 @@ async function renderTransactions() {
   }
   const month = state.month && months.includes(state.month) ? state.month : months[months.length - 1];
   state.month = month;
-  const source = state.source;
-  const txns = (await (source === "bill" ? api.bill(month) : api.history(month))).sort((a, b) =>
-    shownDate(a).localeCompare(shownDate(b)),
-  );
+  const [stored, history] = await Promise.all([api.bill(month), api.history(month)]);
+  // Rows saved before bills and history were split have no `statement` and
+  // are never matched until Settings ▸ Check older data sorts them out.
+  const legacy = stored.some((b) => !b.statement);
+  const bills = stored.map((b) => (b.statement ? b : { ...b, statement: month }));
+  // Bill items can be dated from an earlier month's history (online orders,
+  // later instalment parts) — fetch those too so their details can be shown.
+  const otherMonths = [...new Set(bills.map((b) => b.txnDate?.slice(0, 7)).filter((m) => m && m !== month))];
+  const others = (await Promise.all(otherMonths.map((m) => api.history(m).catch(() => [])))).flat();
+  const histById = new Map([...history, ...others].map((h) => [h.id, h]));
+  const rows = combineRows(bills, history, histById);
+
+  const dated = rows.filter((r) => r.bill && r.date).length;
+  const unbilled = rows.filter((r) => !r.bill && isPurchase(r.hist) && !r.hist.billedIn).length;
+  const repayments = rows.filter((r) => r.hist?.type === "Bill Payment").length;
+  const summary = [
+    bills.length ? `${bills.length} on ${monthLabel(month)} bill · ${dated} dated` : "No bill imported",
+    unbilled ? `${unbilled} not yet billed` : "",
+    repayments ? `${repayments} repayment(s)` : "",
+  ].filter(Boolean);
 
   view.innerHTML = `
     <div class="row" id="tx-head"></div>
@@ -189,21 +223,21 @@ async function renderTransactions() {
       </select>
       <input id="f-search" type="search" placeholder="Search merchant…" />
     </div>
+    ${legacy ? `<div class="warn">This month has older data that can't be matched yet. Run <b>Settings ▸ Check older data</b> once to link it.</div>` : ""}
+    <p class="hint">${summary.join(" · ")}</p>
     <ul class="tx-list" id="tx-list"></ul>`;
-  $("#tx-head").append(
-    monthSelector(months, month, (m) => ((state.month = m), renderTransactions())),
-    segmented([["bill", "Bill"], ["history", "Transactions"]], source, (v) => ((state.source = v), renderTransactions())),
-  );
+  $("#tx-head").append(monthSelector(months, month, (m) => ((state.month = m), renderTransactions())));
 
-  const meta = (t) => {
+  const meta = (r) => {
+    const t = rowTxn(r);
     const bits = [
-      source === "bill" && !t.txnDate ? "date unknown" : shownDate(t),
+      r.date ?? "date unknown",
       esc(t.type) + (t.part ? ` ${t.part}/${t.of}` : ""),
       t.channel === "in_store" ? "in store" : "",
     ].filter(Boolean);
     let tags = "";
-    if (source === "history" && t.billedIn) tags = tag(`on ${monthLabel(t.billedIn)} bill`, "muted");
-    else if (source === "history" && isPurchase(t)) tags = tag("not yet billed", "pending");
+    if (!r.bill && r.hist.billedIn) tags = tag(`on ${monthLabel(r.hist.billedIn)} bill`, "muted");
+    else if (!r.bill && isPurchase(r.hist)) tags = tag("not yet billed", "pending");
     return bits.join(" · ") + tags;
   };
 
@@ -211,44 +245,108 @@ async function renderTransactions() {
   const draw = () => {
     const type = $("#f-type").value;
     const q = $("#f-search").value.toLowerCase();
-    const rows = txns.filter(
-      (t) => (!type || t.type === type) && (!q || t.merchant.toLowerCase().includes(q)),
-    );
+    const shown = rows.filter((r) => {
+      const t = rowTxn(r);
+      return (!type || t.type === type) && (!q || t.merchant.toLowerCase().includes(q));
+    });
     list.innerHTML =
-      rows
-        .map(
-          (t) => `
-      <li class="tx" data-id="${t.id}">
+      shown
+        .map((r) => {
+          const t = rowTxn(r);
+          return `
+      <li class="tx" data-key="${r.key}" role="button" tabindex="0">
         <div class="tx-main">
           <div class="tx-merchant">${esc(t.merchant)}</div>
-          <div class="tx-meta">${meta(t)}</div>
+          <div class="tx-meta">${meta(r)}</div>
         </div>
         <div class="tx-amount ${t.sign === "+" ? "pos" : ""}">${t.sign}${fmtRM(t.amount)}</div>
-        <button class="tx-del" title="Delete" aria-label="Delete">✕</button>
-      </li>`,
-        )
-        .join("") ||
-      `<div class="empty">${txns.length ? "No matches." : source === "bill" ? "No bill imported for this month." : "No transactions saved for this month."}</div>`;
+        <span class="tx-chev" aria-hidden="true">›</span>
+      </li>`;
+        })
+        .join("") || `<div class="empty">${rows.length ? "No matches." : "Nothing saved for this month."}</div>`;
   };
   draw();
   $("#f-type").onchange = draw;
   $("#f-search").oninput = draw;
 
-  list.onclick = async (e) => {
-    if (!e.target.classList.contains("tx-del")) return;
+  const open = (e) => {
     const li = e.target.closest(".tx");
-    const t = txns.find((x) => x.id === li.dataset.id);
-    if (!confirm(`Delete ${t.merchant} ${t.sign}${fmtRM(t.amount)} on ${shownDate(t)}?`)) return;
+    if (li) showDetail(rows.find((r) => r.key === li.dataset.key));
+  };
+  list.onclick = open;
+  list.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    open(e);
+  };
+}
+
+/** Bottom sheet with everything known about a row; deleting happens here. */
+function showDetail(row) {
+  const { bill, hist } = row;
+  const t = rowTxn(row);
+  const field = (label, value) => (value ? `<dt>${label}</dt><dd>${value}</dd>` : "");
+
+  let billing = "";
+  if (bill) billing = `${monthLabel(bill.statement)} bill`;
+  else if (hist.billedIn) billing = `${monthLabel(hist.billedIn)} bill`;
+  else if (isPurchase(hist)) billing = tag("not yet billed", "pending");
+
+  const purchased = row.date
+    ? fmtDate(row.date)
+    : `<span class="muted">Unknown — paste this month's transaction history to match it</span>`;
+  let plan = "";
+  if (bill?.part && hist) plan = `Part ${bill.part} of ${bill.of} · plan total ${fmtRM(hist.amount)}`;
+  else if (bill?.part) plan = `Part ${bill.part} of ${bill.of}`;
+  // History titles are often fuller than the bill's (promo tags, variants).
+  const twoDescs = bill && hist && bill.description !== hist.description;
+  let source = "Transaction history";
+  if (bill && hist) source = "Bill item, matched to transaction history";
+  else if (bill) source = "Bill item (no matching transaction yet)";
+
+  const dlg = document.createElement("dialog");
+  dlg.className = "sheet";
+  dlg.innerHTML = `
+    <div class="sheet-head">
+      <div class="sheet-title">${esc(t.merchant)}</div>
+      <div class="sheet-amount ${t.sign === "+" ? "pos" : ""}">${t.sign}${fmtRM(t.amount)}</div>
+    </div>
+    <dl class="detail">
+      ${field("Type", esc(t.type) + " · " + (t.channel === "in_store" ? "In store" : "Online"))}
+      ${field("Purchased", purchased)}
+      ${field("Billed on", billing)}
+      ${field("Instalment", plan)}
+      ${field(twoDescs ? "On bill as" : "Description", esc(t.description))}
+      ${field("Transaction", twoDescs ? esc(hist.description) : "")}
+      ${field("Source", source)}
+      ${field("Imported", fmtDate(t.importedAt.slice(0, 10)))}
+    </dl>
+    <div class="sheet-actions">
+      ${bill ? `<button data-del="bill">Delete bill item</button>` : ""}
+      ${hist ? `<button data-del="history">Delete transaction</button>` : ""}
+      <button class="primary" data-close>Close</button>
+    </div>`;
+  document.body.append(dlg);
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.onclick = async (e) => {
+    // A tap on the backdrop lands on the dialog element itself.
+    if (e.target === dlg || "close" in e.target.dataset) return dlg.close();
+    const kind = e.target.dataset.del;
+    if (!kind) return;
+    const rec = kind === "bill" ? bill : hist;
+    const what = kind === "bill" ? `this ${monthLabel(bill.statement)} bill item` : "this transaction";
+    if (!confirm(`Delete ${what}: ${rec.merchant} ${rec.sign}${fmtRM(rec.amount)}?`)) return;
     try {
-      await api.remove(source, t.id, month);
+      await api.remove(kind, rec.id, rec.date.slice(0, 7));
       invalidate();
-      txns.splice(txns.indexOf(t), 1);
-      draw();
+      dlg.close();
       toast("Deleted");
+      renderTransactions();
     } catch (err) {
       toast(err.message, true);
     }
   };
+  dlg.showModal();
 }
 
 // ---------- Add ----------
@@ -503,7 +601,7 @@ function renderSettings() {
 
 // ---------- Router ----------
 
-const state = { month: null, source: "bill", addKind: "bill" };
+const state = { month: null, addKind: "bill" };
 const routes = {
   dashboard: renderDashboard,
   transactions: renderTransactions,
