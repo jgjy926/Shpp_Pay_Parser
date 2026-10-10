@@ -29,7 +29,7 @@ function toast(message, isError = false) {
 }
 
 // Cache API reads per page load; cleared whenever data changes.
-const cache = { months: null, summary: new Map() };
+const cache = { months: null, billMonths: [], summary: new Map() };
 function invalidate() {
   cache.months = null;
   cache.summary.clear();
@@ -53,6 +53,7 @@ async function loadMonths() {
   if (!cache.months) {
     const meta = await api.months();
     cache.months = [...new Set([...meta.months, ...(meta.historyMonths ?? [])])].sort();
+    cache.billMonths = meta.months;
   }
   return cache.months;
 }
@@ -181,6 +182,16 @@ function combineRows(bills, history, histById) {
 }
 
 const rowTxn = (r) => r.bill ?? r.hist;
+
+/** A purchase on no saved bill: "not yet billed" only if its bill can still
+ *  come — a month before the latest saved bill with no bill of its own just
+ *  never had its statement pasted. */
+const noBillSaved = (h) => {
+  const latest = cache.billMonths[cache.billMonths.length - 1];
+  const m = h.date.slice(0, 7);
+  return Boolean(latest) && m < latest && !cache.billMonths.includes(m);
+};
+const unbilledTag = (h) => (noBillSaved(h) ? tag("bill not saved", "muted") : tag("not yet billed", "pending"));
 const fmtDate = (iso) =>
   new Date(`${iso}T00:00:00`).toLocaleDateString("en-MY", { day: "numeric", month: "short", year: "numeric" });
 
@@ -206,7 +217,7 @@ async function renderTransactions() {
   const rows = combineRows(bills, history, histById);
 
   const dated = rows.filter((r) => r.bill && r.date).length;
-  const unbilled = rows.filter((r) => !r.bill && isPurchase(r.hist) && !r.hist.billedIn).length;
+  const unbilled = rows.filter((r) => !r.bill && isPurchase(r.hist) && !r.hist.billedIn && !noBillSaved(r.hist)).length;
   const repayments = rows.filter((r) => r.hist?.type === "Bill Payment").length;
   const summary = [
     bills.length ? `${bills.length} on ${monthLabel(month)} bill · ${dated} dated` : "No bill imported",
@@ -237,7 +248,7 @@ async function renderTransactions() {
     ].filter(Boolean);
     let tags = "";
     if (!r.bill && r.hist.billedIn) tags = tag(`on ${monthLabel(r.hist.billedIn)} bill`, "muted");
-    else if (!r.bill && isPurchase(r.hist)) tags = tag("not yet billed", "pending");
+    else if (!r.bill && isPurchase(r.hist)) tags = unbilledTag(r.hist);
     return bits.join(" · ") + tags;
   };
 
@@ -290,7 +301,7 @@ function showDetail(row) {
   let billing = "";
   if (bill) billing = `${monthLabel(bill.statement)} bill`;
   else if (hist.billedIn) billing = `${monthLabel(hist.billedIn)} bill`;
-  else if (isPurchase(hist)) billing = tag("not yet billed", "pending");
+  else if (isPurchase(hist)) billing = unbilledTag(hist);
 
   const purchased = row.date
     ? fmtDate(row.date)
@@ -547,8 +558,9 @@ function renderSettings() {
     <button id="btn-export">Download backup (JSON)</button>
     <hr />
     <h2>Data</h2>
-    <p class="hint">Older imports kept bill items and transaction history in one place. This moves history rows into the separate Transactions store and tags old bill items. Download a backup first.</p>
-    <button id="btn-migrate">Check older data…</button>`;
+    <p class="hint">Older imports kept bill items and transaction history in one place. This moves history rows into the separate Transactions store, drops copies of rows you have since re-pasted, tags old bill items, then links bills to transactions. Download a backup first.</p>
+    <button id="btn-migrate">Check older data…</button>
+    <div id="migrate-plan"></div>`;
 
   $("#btn-save").onclick = async () => {
     cfg.apiBase = $("#set-api").value;
@@ -577,26 +589,55 @@ function renderSettings() {
 
   $("#btn-migrate").onclick = async () => {
     const btn = $("#btn-migrate");
+    const box = $("#migrate-plan");
     btn.disabled = true;
     try {
-      const plan = await api.migrate(true);
-      if (!plan.movedToHistory && !plan.taggedAsBill) {
-        toast("Nothing to migrate — data is already split");
-        return;
-      }
-      const lines = Object.entries(plan.byMonth)
-        .map(([m, v]) => `${monthLabel(m)}: ${v.movedToHistory} → Transactions, ${v.taggedAsBill} tagged as bill`)
-        .join("\n");
-      if (!confirm(`Migrate older data?\n\n${lines}`)) return;
-      const r = await api.migrate(false);
-      invalidate();
-      toast(`Migrated: ${r.movedToHistory} moved to Transactions, ${r.taggedAsBill} bill items tagged`);
+      const plan = await api.migrate({ dryRun: true });
+      const rows = Object.entries(plan.byMonth);
+      box.innerHTML = `
+        <table class="preview-table">
+          <tr><th>Month</th><th class="r">→ Transactions</th><th class="r">Already saved</th><th class="r">Bill items</th></tr>
+          ${rows
+            .map(([m, v]) => `<tr><td>${monthLabel(m)}</td><td class="r">${v.movedToHistory}</td><td class="r">${v.dropped}</td><td class="r">${v.taggedAsBill}</td></tr>`)
+            .join("")}
+        </table>
+        <p class="hint">${
+          rows.length
+            ? `${plan.movedToHistory} row(s) move to Transactions, ${plan.dropped} are dropped as copies of saved transactions, ${plan.taggedAsBill} become bill items.`
+            : "Nothing left to split."
+        } Linking then runs over every saved bill.</p>
+        <button id="btn-migrate-run" class="primary">${rows.length ? "Migrate &amp; link" : "Link bills and transactions"}</button>`;
+      $("#btn-migrate-run").onclick = () => runMigration(box);
     } catch (err) {
       toast(err.message, true);
     } finally {
       btn.disabled = false;
     }
   };
+}
+
+/** Run the batched migration to the end, then relink. Safe to re-run. */
+async function runMigration(box) {
+  const run = $("#btn-migrate-run");
+  run.disabled = true;
+  const total = { movedToHistory: 0, dropped: 0, taggedAsBill: 0 };
+  try {
+    let from = null;
+    do {
+      run.textContent = from ? `Migrating from ${monthLabel(from)}…` : "Migrating…";
+      const r = await api.migrate({ from });
+      for (const k of Object.keys(total)) total[k] += r[k];
+      from = r.next;
+    } while (from);
+    run.textContent = "Linking bills and transactions…";
+    const link = await api.relink();
+    invalidate();
+    box.innerHTML = `<div class="note">Done: ${total.movedToHistory} moved to Transactions, ${total.dropped} duplicate(s) dropped, ${total.taggedAsBill} bill items tagged. <b>${link.dated}/${link.billItems}</b> bill items are linked to a transaction.</div>`;
+  } catch (err) {
+    toast(err.message, true);
+    run.disabled = false;
+    run.textContent = "Retry";
+  }
 }
 
 // ---------- Router ----------

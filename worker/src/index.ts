@@ -132,8 +132,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // Migration runs in batches (see Store.migrate): the client follows `next`,
+  // then POSTs ?relink=1 once to match bills and history over the result.
   if (pathname === "/api/migrate" && request.method === "POST") {
-    return Response.json(await store.migrate(url.searchParams.get("dryRun") === "1"));
+    if (url.searchParams.get("relink") === "1") return Response.json(await store.relink());
+    const from = url.searchParams.get("from") ?? undefined;
+    if (from !== undefined && !MONTH_RE.test(from)) throw new ApiError(400, "from must be YYYY-MM");
+    return Response.json(await store.migrate(url.searchParams.get("dryRun") === "1", from));
   }
 
   if (pathname === "/api/summary" && request.method === "GET") {

@@ -54,5 +54,7 @@ export const api = {
     req(`/api/${kind === "bill" ? "transactions" : "history"}/${id}?month=${month}`, { method: "DELETE" }),
   summary: (month) => req(`/api/summary?month=${month}`),
   exportAll: () => req("/api/export"),
-  migrate: (dryRun) => req(`/api/migrate${dryRun ? "?dryRun=1" : ""}`, { method: "POST" }),
+  migrate: ({ dryRun = false, from = null } = {}) =>
+    req(`/api/migrate?${dryRun ? "dryRun=1" : from ? `from=${from}` : ""}`, { method: "POST" }),
+  relink: () => req("/api/migrate?relink=1", { method: "POST" }),
 };

@@ -47,9 +47,13 @@ Read SPEC.md first — it is the source of truth for architecture, data design, 
     statement's last day, so enrichment never changes an id.
   - Summary: month with a bill = bill total; without = the month's history purchases (estimate).
     `pending` = history purchases not yet on any bill; `payments` = repayments from history.
-  - `POST /api/migrate[?dryRun=1]` (Settings ▸ Check older data) splits pre-Phase-7 data: untagged
-    rows in bill shards move to history/, except grouped-statement rows (month's last day, ≥5 in one
-    import batch) which get tagged as bill items. Until then the Worker leaves untagged bill-shard
+  - `POST /api/migrate[?dryRun=1|?from=YYYY-MM|?relink=1]` (Settings ▸ Check older data) splits
+    pre-Phase-7 data: untagged rows in bill shards move to history/, except grouped-statement rows
+    (month's last day, ≥5 in one import batch) which get tagged as bill items, and rows already in
+    history/ (same id, or same date/type/amount — the old parser mis-split refunds) which are
+    dropped. It runs 5 bill months per call and returns `next`; the client loops, then calls
+    `?relink=1` to reconcile around every bill month. Keep each Worker request under ~50 Koofr calls
+    (free-plan subrequest limit) — verified with a fake Koofr counting requests (max 34). Until then the Worker leaves untagged bill-shard
     rows out of reconciliation (they used to be mistaken for history), and the Transactions tab
     shows a banner pointing to the migration.
   - Transactions tab is one combined list (no Bill/Transactions toggle): a matched bill item and its

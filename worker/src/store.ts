@@ -100,7 +100,47 @@ export interface MigrationReport {
   movedToHistory: number;
   /** untagged grouped-statement rows recognised as bill items and tagged */
   taggedAsBill: number;
-  byMonth: Record<string, { movedToHistory: number; taggedAsBill: number }>;
+  /** rows already saved in history/ (re-pasted since) — removed */
+  dropped: number;
+  byMonth: Record<string, { movedToHistory: number; taggedAsBill: number; dropped: number }>;
+  /** month the next call resumes from; null when every month is done */
+  next: string | null;
+}
+
+/** Bill months a single migrate call handles. Each costs up to ~8 Koofr
+ *  requests, and a Worker invocation may make 50 subrequests (free plan). */
+const MIGRATE_BATCH = 5;
+
+/** Sort the untagged rows of bill shard `month` — see {@link Store.migrate}. */
+export function planMigration(shard: Transaction[], history: Transaction[], month: string) {
+  const last = lastDayOf(month);
+  const batch = new Map<string, number>(); // importedAt -> rows on the last day
+  for (const t of shard) {
+    if (!t.statement && t.date === last) batch.set(t.importedAt, (batch.get(t.importedAt) ?? 0) + 1);
+  }
+  const isLegacyBill = (t: Transaction) =>
+    !t.statement && t.date === last && t.type !== "Bill Payment" && (batch.get(t.importedAt) ?? 0) >= 5;
+  const rest = shard.filter((t) => !t.statement && !isLegacyBill(t));
+
+  // History rows not already claimed by id, counted per date/type/amount, so
+  // two identical purchases on one day still need two history rows to drop.
+  const ids = new Set(history.map((h) => h.id));
+  const restIds = new Set(rest.map((t) => t.id));
+  const key = (t: Transaction) => `${t.date}|${t.type}|${t.amount.toFixed(2)}`;
+  const spare = new Map<string, number>();
+  for (const h of history) if (!restIds.has(h.id)) spare.set(key(h), (spare.get(key(h)) ?? 0) + 1);
+
+  const drop: Transaction[] = [];
+  const move: Transaction[] = [];
+  for (const t of rest) {
+    const n = spare.get(key(t)) ?? 0;
+    if (ids.has(t.id)) drop.push(t);
+    else if (n > 0) {
+      spare.set(key(t), n - 1);
+      drop.push(t);
+    } else move.push(t);
+  }
+  return { tag: shard.filter(isLegacyBill), drop, move };
 }
 
 export class Store {
@@ -369,82 +409,94 @@ export class Store {
 
   /**
    * One-off split of data stored before bills and history had separate
-   * folders: every bill shard row without `statement` is either an untagged
-   * grouped-statement item (dated the month's last day, imported in a batch
-   * of ≥5 sharing that date — tag it) or a history row (move it to history/).
-   * `dryRun` reports without writing.
+   * folders. Every bill shard row without `statement` is either:
+   *  - an untagged grouped-statement item (dated the month's last day,
+   *    imported in a batch of ≥5 sharing that date) — tagged as a bill item;
+   *  - a copy of a row already saved in history/ (same id, or the same
+   *    date/type/amount — the old parser mis-split refunded purchases) —
+   *    dropped, the history copy wins;
+   *  - otherwise a history row — moved to history/ (rows in shard M are
+   *    dated in M, so they go to history/M).
+   *
+   * Runs MIGRATE_BATCH months per call, from `from` on, without reconciling;
+   * `next` is where the following call resumes (null when done). Call
+   * {@link relink} afterwards. `dryRun` reports every month without writing.
    */
-  async migrate(dryRun: boolean): Promise<MigrationReport> {
+  async migrate(dryRun: boolean, from?: string): Promise<MigrationReport> {
     const meta = await this.getMeta();
-    const report: MigrationReport = { dryRun, movedToHistory: 0, taggedAsBill: 0, byMonth: {} };
-    if (!meta.months.length) return report;
+    const report: MigrationReport = { dryRun, movedToHistory: 0, taggedAsBill: 0, dropped: 0, byMonth: {}, next: null };
+    const todo = meta.months.filter((m) => !from || m >= from);
+    const batch = dryRun ? todo : todo.slice(0, MIGRATE_BATCH);
+    report.next = todo[batch.length] ?? null;
 
-    const plan = (shard: Transaction[], month: string) => {
-      const last = lastDayOf(month);
-      const batch = new Map<string, number>(); // importedAt -> rows on the last day
-      for (const t of shard) {
-        if (!t.statement && t.date === last) batch.set(t.importedAt, (batch.get(t.importedAt) ?? 0) + 1);
-      }
-      const isLegacyBill = (t: Transaction) =>
-        !t.statement && t.date === last && t.type !== "Bill Payment" && (batch.get(t.importedAt) ?? 0) >= 5;
-      return {
-        tag: shard.filter(isLegacyBill),
-        move: shard.filter((t) => !t.statement && !isLegacyBill(t)),
-      };
-    };
-
-    if (dryRun) {
-      for (const month of meta.months) {
-        const { tag, move } = plan(await this.getShard("bill", month), month);
-        if (tag.length || move.length) report.byMonth[month] = { movedToHistory: move.length, taggedAsBill: tag.length };
-        report.movedToHistory += move.length;
-        report.taggedAsBill += tag.length;
-      }
-      return report;
-    }
-
-    // Process in chunks of months so each pass stays within subrequest limits.
-    const historyMonths = new Set<string>();
     const emptied: string[] = [];
-    for (const month of meta.months) {
-      await this.#withWindow([month], (_shards, get) => {
-        const billShard = get("bill", month);
-        const { tag, move } = plan(billShard.txns, month);
-        for (const t of tag) {
-          t.statement = month;
-          const p = t.description.match(/^\[(\d+)\/(\d+)\]/);
-          if (p) Object.assign(t, { part: Number(p[1]), of: Number(p[2]) });
-        }
-        const moving = new Set(move);
+    const historyTouched: string[] = [];
+    for (const month of batch) {
+      const [billFile, histFile] = await Promise.all([
+        this.koofr.getJson<Transaction[]>(this.#path("bill", month)),
+        meta.historyMonths.includes(month)
+          ? this.koofr.getJson<Transaction[]>(this.#path("history", month))
+          : Promise.resolve(null),
+      ]);
+      const shard = billFile?.data ?? [];
+      const history = histFile?.data ?? [];
+      const { tag, drop, move } = planMigration(shard, history, month);
+      if (!tag.length && !drop.length && !move.length) continue;
+      report.byMonth[month] = { movedToHistory: move.length, taggedAsBill: tag.length, dropped: drop.length };
+      report.movedToHistory += move.length;
+      report.taggedAsBill += tag.length;
+      report.dropped += drop.length;
+      if (dryRun) continue;
+
+      for (const t of tag) {
+        t.statement = month;
+        const p = t.description.match(/^\[(\d+)\/(\d+)\]/);
+        if (p) Object.assign(t, { part: Number(p[1]), of: Number(p[2]) });
+        delete t.txnDate;
+        delete t.ref;
+      }
+      // History first: if the bill write then fails, a rerun drops the
+      // already-moved rows as copies instead of losing them.
+      if (move.length) {
         for (const t of move) {
           delete t.billedIn;
           delete t.txnDate;
           delete t.ref;
-          const m = t.date.slice(0, 7);
-          const h = get("history", m);
-          if (!h.txns.some((x) => x.id === t.id)) h.txns.push(t);
-          historyMonths.add(m);
         }
-        billShard.txns = billShard.txns.filter((t) => !moving.has(t));
-        if (!billShard.txns.length) emptied.push(month);
-        if (tag.length || move.length) report.byMonth[month] = { movedToHistory: move.length, taggedAsBill: tag.length };
-        report.movedToHistory += move.length;
-        report.taggedAsBill += tag.length;
-      });
-      // Make moved months visible to the next pass's window.
-      if (historyMonths.size) await this.#touchMeta("history", historyMonths);
+        const merged = [...history, ...move].sort((a, b) => a.date.localeCompare(b.date));
+        await this.koofr.putJson(this.#path("history", month), merged, histFile?.etag);
+        historyTouched.push(month);
+      }
+      const kept = shard.filter((t) => t.statement);
+      if (kept.length) await this.koofr.putJson(this.#path("bill", month), kept, billFile?.etag);
+      else {
+        await this.koofr.delete(this.#path("bill", month));
+        emptied.push(month);
+      }
     }
 
-    // Months that were history-only no longer have a bill.
-    if (emptied.length) {
-      for (const m of emptied) await this.koofr.delete(this.#path("bill", m));
-      await this.#updateJson<Meta>("meta.json", EMPTY_META, (meta) => ({
+    if (historyTouched.length || emptied.length) {
+      await this.#updateJson<Meta>("meta.json", EMPTY_META, (m) => ({
         ...EMPTY_META,
-        ...meta,
-        months: meta.months.filter((m) => !emptied.includes(m)),
+        ...m,
+        months: m.months.filter((x) => !emptied.includes(x)),
+        historyMonths: [...new Set([...(m.historyMonths ?? []), ...historyTouched])].sort(),
+        lastSync: new Date().toISOString(),
       }));
     }
     return report;
+  }
+
+  /** Re-run bill ↔ history reconciliation around every stored bill month. */
+  async relink(): Promise<{ billItems: number; dated: number }> {
+    const meta = await this.getMeta();
+    if (!meta.months.length) return { billItems: 0, dated: 0 };
+    let bills: Transaction[] = [];
+    await this.#withWindow(meta.months, (shards) => {
+      // Reconciliation then updates these stored objects in place.
+      bills = [...shards.values()].filter((s) => s.kind === "bill").flatMap((s) => s.txns);
+    });
+    return { billItems: bills.length, dated: bills.filter((t) => t.txnDate).length };
   }
 
   /** Full dump for backup. */
